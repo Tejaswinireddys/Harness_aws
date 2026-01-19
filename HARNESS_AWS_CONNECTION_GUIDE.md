@@ -6,10 +6,11 @@ This guide provides detailed step-by-step instructions for connecting Harness to
 
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
-2. [Part 1: Connecting Harness to AWS EC2 Instances](#part-1-connecting-harness-to-aws-ec2-instances)
-3. [Part 2: Connecting Harness to AWS ECS Servers](#part-2-connecting-harness-to-aws-ecs-servers)
-4. [Verification and Testing](#verification-and-testing)
-5. [Troubleshooting](#troubleshooting)
+2. [Complete Step-by-Step: Create IAM Role for Harness (EC2 + ECS)](#complete-step-by-step-create-iam-role-for-harness-ec2--ecs)
+3. [Part 1: Connecting Harness to AWS EC2 Instances](#part-1-connecting-harness-to-aws-ec2-instances)
+4. [Part 2: Connecting Harness to AWS ECS Servers](#part-2-connecting-harness-to-aws-ecs-servers)
+5. [Verification and Testing](#verification-and-testing)
+6. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -63,33 +64,130 @@ If you do not have those project-level permissions, ask an Org/Admin to grant th
 - `ec2:DescribeInstances` (for ECS instances)
 - `iam:PassRole` (for ECS task execution roles)
 
-### Detailed Steps: Add AWS IAM Permissions (EC2 + ECS)
+---
 
-Use these steps to **attach real AWS managed policies** plus the required `iam:PassRole` permission.
+## Complete Step-by-Step: Create IAM Role for Harness (EC2 + ECS)
 
-#### Step A: Attach Managed Policies
+This section provides **beginner-friendly, detailed instructions** to create the IAM role Harness needs to connect to your EC2 instances and ECS clusters.
 
-1. **Open IAM**
-   - AWS Console → **IAM**
-2. **Choose your principal**
-   - **Users** → select the IAM user  
-   - **Roles** → select the IAM role
+### What You Will Create
+
+| Item | Purpose |
+|------|---------|
+| **HarnessDeploymentRole** | The IAM role Harness uses to access EC2 and ECS |
+| **ecsTaskExecutionRole** | The role ECS uses to pull images and write logs (AWS may have created this already) |
+| Inline policy for `iam:PassRole` | Allows Harness to pass the task execution role to ECS |
+
+---
+
+### Step 1: Find Your AWS Account ID
+
+You will need your 12-digit AWS Account ID in later steps.
+
+1. Open your browser and go to **https://console.aws.amazon.com**
+2. Sign in with your AWS credentials
+3. Click your **account name** in the top-right corner of the console
+4. You will see **Account ID: 123456789012** (12 digits)
+5. **Write this down** — you will use it later
+
+---
+
+### Step 2: Check If ecsTaskExecutionRole Already Exists
+
+AWS often creates this role automatically when you first use ECS.
+
+1. In the AWS Console, type **IAM** in the search bar at the top
+2. Click **IAM** to open the IAM Dashboard
+3. In the left menu, click **Roles**
+4. In the search box, type **ecsTaskExecutionRole**
+5. **If you see it in the list:**
+   - Click on **ecsTaskExecutionRole**
+   - At the top, find **ARN** — it looks like:
+     ```
+     arn:aws:iam::123456789012:role/ecsTaskExecutionRole
+     ```
+   - **Copy and save this ARN** — you will need it in Step 5
+   - Skip to **Step 4**
+6. **If you do NOT see it:**
+   - Continue to **Step 3** to create it
+
+---
+
+### Step 3: Create ecsTaskExecutionRole (Only If It Does Not Exist)
+
+1. In IAM → Roles, click the **Create role** button (top right)
+
+2. **Select trusted entity**
+   - Under "Trusted entity type", select **AWS service**
+   - Under "Use case", find and select **Elastic Container Service**
+   - Below that, select **Elastic Container Service Task**
+   - Click **Next**
+
 3. **Add permissions**
-   - Permissions tab → **Add permissions**
-   - Choose **Attach policies directly**
-4. **Attach these AWS managed policies**
-   - `AmazonEC2FullAccess`
-   - `AmazonECSFullAccess`
-5. Click **Next** → **Add permissions**
+   - In the search box, type **AmazonECSTaskExecutionRolePolicy**
+   - Check the box next to **AmazonECSTaskExecutionRolePolicy**
+   - Click **Next**
 
-#### Step B: Add `iam:PassRole` Permission
+4. **Name, review, and create**
+   - Role name: **ecsTaskExecutionRole** (use this exact name)
+   - Description: `Allows ECS tasks to call AWS services on your behalf`
+   - Scroll down and click **Create role**
 
-This is required for ECS task execution roles.
+5. **Get the ARN**
+   - After creation, click on **ecsTaskExecutionRole** in the roles list
+   - At the top, copy the **ARN**:
+     ```
+     arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole
+     ```
+   - **Save this ARN** — you will need it in Step 5
 
-1. On the same user/role, go to **Permissions** → **Add permissions**
-2. Choose **Create inline policy**
-3. Select the **JSON** tab
-4. Paste this and replace the role ARN with your **actual ECS task execution role ARN**:
+---
+
+### Step 4: Create the Harness Deployment Role
+
+This is the main role Harness will use.
+
+1. In IAM → Roles, click **Create role**
+
+2. **Select trusted entity**
+   - Under "Trusted entity type", select **AWS account**
+   - Select **This account** (your own account)
+   - Click **Next**
+
+3. **Add permissions — attach managed policies**
+   - In the search box, type **AmazonEC2FullAccess**
+   - Check the box next to **AmazonEC2FullAccess**
+   - Clear the search box, then type **AmazonECSFullAccess**
+   - Check the box next to **AmazonECSFullAccess**
+   - You should now have **2 policies selected**
+   - Click **Next**
+
+4. **Name, review, and create**
+   - Role name: **HarnessDeploymentRole**
+   - Description: `Role for Harness to deploy to EC2 and ECS`
+   - Scroll down and click **Create role**
+
+5. **Confirm creation**
+   - You should see a green banner: "Role HarnessDeploymentRole created"
+   - Click on **HarnessDeploymentRole** to open it
+
+---
+
+### Step 5: Add the iam:PassRole Permission (Required for ECS)
+
+Harness needs permission to "pass" the ecsTaskExecutionRole to ECS when running tasks.
+
+1. You should be on the **HarnessDeploymentRole** page
+   - If not, go to IAM → Roles → click **HarnessDeploymentRole**
+
+2. Click the **Permissions** tab
+
+3. Click **Add permissions** → **Create inline policy**
+
+4. Click the **JSON** tab
+
+5. **Delete everything** in the text box and paste this:
+
 ```
 {
   "Version": "2012-10-17",
@@ -97,82 +195,83 @@ This is required for ECS task execution roles.
     {
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::123456789012:role/YourEcsTaskExecutionRole"
+      "Resource": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole"
     }
   ]
 }
 ```
-5. Click **Next**
-6. **Name**: `AllowPassRoleForEcsTasks`
-7. Click **Create policy**
 
-> If you are not using ECS yet, you can skip Step B.
+6. **Replace YOUR_ACCOUNT_ID** with your actual 12-digit account ID from Step 1
+   - Example: If your account ID is `111122223333`, the Resource becomes:
+     ```
+     arn:aws:iam::111122223333:role/ecsTaskExecutionRole
+     ```
+
+7. Click **Next**
+
+8. Policy name: **AllowPassRoleForEcsTasks**
+
+9. Click **Create policy**
+
+10. You should now see **3 policies** attached to HarnessDeploymentRole:
+    - AmazonEC2FullAccess
+    - AmazonECSFullAccess
+    - AllowPassRoleForEcsTasks
+
+---
+
+### Step 6: Get the Role ARN for Harness
+
+1. On the **HarnessDeploymentRole** page, look at the top
+2. Find **ARN** — it looks like:
+   ```
+   arn:aws:iam::YOUR_ACCOUNT_ID:role/HarnessDeploymentRole
+   ```
+3. Click the **copy icon** next to it
+4. **Save this ARN** — you will paste it into Harness
+
+---
+
+### Step 7: (Alternative) Create Access Keys Instead of Using Role
+
+If you prefer to use Access Keys instead of assuming a role:
+
+1. Go to IAM → **Users**
+2. Click **Create user**
+3. User name: **harness-deployment-user**
+4. Click **Next**
+5. Select **Attach policies directly**
+6. Search and check:
+   - **AmazonEC2FullAccess**
+   - **AmazonECSFullAccess**
+7. Click **Next** → **Create user**
+8. Click on the new user → **Security credentials** tab
+9. Under "Access keys", click **Create access key**
+10. Select **Application running outside AWS**
+11. Click **Next** → **Create access key**
+12. **IMPORTANT: Copy both values NOW** (you cannot see the secret again):
+    - **Access Key ID**: `AKIA...` (20 characters)
+    - **Secret Access Key**: `wJalr...` (40 characters)
+13. Store these securely
+14. Now add the inline PassRole policy to this user:
+    - Go to the user → Permissions tab
+    - Add permissions → Create inline policy
+    - Follow the same JSON steps from Step 5
 
 ---
 
 ## Part 1: Connecting Harness to AWS EC2 Instances
 
-### Step 1: Create AWS IAM User or Use Existing Role
+### Step 1: Verify Your IAM Setup Is Complete
 
-#### Option A: Create IAM User (Recommended for Testing)
+Before continuing, confirm you have:
 
-1. **Log in to AWS Console**
-   - Navigate to https://console.aws.amazon.com
-   - Sign in with your AWS account credentials
-
-2. **Navigate to IAM Service**
-   - In the AWS Console, search for "IAM" in the services search bar
-   - Click on "IAM" service
-
-3. **Create New User**
-   - Click on "Users" in the left navigation pane
-   - Click "Add users" button
-   - Enter a username (e.g., `harness-ec2-user`)
-   - Select "Provide user access to the AWS Management Console" if you need console access (optional)
-   - Click "Next"
-
-4. **Attach Permissions**
-   - Select "Attach policies directly"
-   - Search for and select:
-     - `AmazonEC2FullAccess` (or create a custom policy with the permissions listed above)
-   - Click "Next"
-
-5. **Review and Create**
-   - Review the user details
-   - Click "Create user"
-
-6. **Create Access Keys**
-   - Click on the newly created user
-   - Go to "Security credentials" tab
-   - Click "Create access key"
-   - Select "Application running outside AWS" as the use case
-   - Click "Next"
-   - Add a description tag (optional)
-   - Click "Create access key"
-   - **IMPORTANT**: Copy both the Access Key ID and Secret Access Key immediately
-   - Store them securely (you won't be able to see the secret key again)
-
-#### Option B: Use IAM Role (Recommended for Production)
-
-1. **Create IAM Role**
-   - Navigate to IAM → Roles
-   - Click "Create role"
-   - Select "AWS account" as trusted entity type
-   - Select "This account" or "Another AWS account" (if using cross-account)
-   - Click "Next"
-
-2. **Attach Permissions**
-   - Attach the same policies as mentioned in Option A
-   - Click "Next"
-
-3. **Name and Create**
-   - Enter role name (e.g., `HarnessEC2Role`)
-   - Add description
-   - Click "Create role"
-
-4. **Note the Role ARN**
-   - Copy the Role ARN (e.g., `arn:aws:iam::123456789012:role/HarnessEC2Role`)
-   - You'll need this in Harness
+- [ ] **HarnessDeploymentRole** created with:
+  - [ ] AmazonEC2FullAccess attached
+  - [ ] AmazonECSFullAccess attached
+  - [ ] AllowPassRoleForEcsTasks inline policy attached
+- [ ] **Role ARN copied** (or Access Key ID + Secret Access Key if using a user)
+- [ ] **ecsTaskExecutionRole** exists (needed for ECS deployments)
 
 ### Step 2: Configure AWS Cloud Provider in Harness
 
@@ -437,33 +536,198 @@ This is required for ECS task execution roles.
 
 ## Verification and Testing
 
-### Test EC2 Connection
+This section walks you through testing the AWS connection and running a connectivity test pipeline.
 
-1. **Test Infrastructure**
-   - Go to Infrastructure Definition
-   - Click "Test" button
-   - Verify instances are discovered
+---
 
-2. **Test Deployment**
-   - Create a simple deployment workflow
-   - Deploy to EC2 infrastructure
-   - Verify deployment succeeds
+### Test 1: Verify AWS Connector Connection
 
-### Test ECS Connection
+This is the first test to confirm Harness can reach AWS with your credentials.
 
-1. **Test Cluster Connection**
-   - Go to ECS Infrastructure Definition
-   - Click "Test" button
-   - Verify cluster is accessible
+1. **Open Harness and go to your Project**
+   - Log in to Harness
+   - In the left sidebar, click **Projects**
+   - Click on your project name
 
-2. **Test Service Discovery**
-   - Verify ECS services are listed
-   - Verify task definitions are accessible
+2. **Navigate to Connectors**
+   - In the left menu, click **Project Setup** (or **Project Settings**)
+   - Click **Connectors**
 
-3. **Test Deployment**
-   - Create a simple ECS deployment
-   - Deploy a test container
-   - Verify tasks are running in ECS console
+3. **Find your AWS Connector**
+   - Look for the AWS connector you created (e.g., `AWS-EC2-Connection`)
+   - Click on it to open
+
+4. **Run Connection Test**
+   - Click the **Test** button (usually in the top right or at the bottom)
+   - Wait for the test to complete
+
+5. **Check the result**
+   - ✅ **Success**: You see "Connection Successful" or a green checkmark
+   - ❌ **Failure**: You see an error message — go to [Troubleshooting](#troubleshooting)
+
+---
+
+### Test 2: Verify EC2 Instance Discovery
+
+This confirms Harness can see your EC2 instances.
+
+1. **Go to your Environment**
+   - In the left menu, click **Environments**
+   - Click on your environment (e.g., `Production`)
+
+2. **Open Infrastructure Definition**
+   - Click on the **Infrastructure Definitions** tab
+   - Click on your EC2 infrastructure (e.g., `EC2-Production`)
+
+3. **Test Instance Discovery**
+   - Look for a **Test** or **Validate** button
+   - Click it
+   - Harness will query AWS for EC2 instances
+
+4. **Check the result**
+   - ✅ **Success**: You see a list of your EC2 instances
+   - ❌ **Failure**: Check your VPC, subnet, region, and security group settings
+
+---
+
+### Test 3: Run a Connectivity Test Pipeline (EC2)
+
+This pipeline runs a simple shell command on your EC2 instance to verify end-to-end connectivity.
+
+#### Step 3.1: Create a New Pipeline
+
+1. In the left menu, click **Pipelines**
+2. Click **+ Create Pipeline**
+3. Name: **EC2-Connectivity-Test**
+4. Click **Start**
+
+#### Step 3.2: Add a Stage
+
+1. Click **+ Add Stage**
+2. Stage type: **Deploy** (or **Custom** if available)
+3. Stage name: **Test EC2 Connection**
+4. Deployment type: **Secure Shell (SSH)**
+5. Click **Set Up Stage**
+
+#### Step 3.3: Configure the Service
+
+1. Click **+ Add Service** (or select an existing one)
+2. Service name: **connectivity-test-service**
+3. Deployment type: **Secure Shell**
+4. For artifacts, you can skip or add a dummy artifact
+5. Click **Save**
+
+#### Step 3.4: Configure the Environment and Infrastructure
+
+1. Click on the **Environment** tab in the stage
+2. Select your environment (e.g., `Production`)
+3. Select your EC2 infrastructure definition
+4. Harness should show your EC2 instances
+
+#### Step 3.5: Add a Shell Script Step
+
+1. In the **Execution** tab, click **+ Add Step**
+2. Step type: **Shell Script**
+3. Name: **Echo Test**
+4. Script type: **Bash**
+5. Script:
+```
+#!/bin/bash
+echo "=== Connectivity Test ==="
+echo "Hostname: $(hostname)"
+echo "Date: $(date)"
+echo "User: $(whoami)"
+echo "=== Test Successful ==="
+```
+6. Click **Apply Changes**
+
+#### Step 3.6: Save and Run the Pipeline
+
+1. Click **Save** (top right)
+2. Click **Run**
+3. In the "Run Pipeline" dialog, click **Run Pipeline**
+
+#### Step 3.7: Check the Results
+
+1. Watch the pipeline execution
+2. Click on the **Echo Test** step when it completes
+3. Expand the **Output** section
+4. You should see:
+```
+=== Connectivity Test ===
+Hostname: ip-10-0-1-123
+Date: Mon Jan 19 12:00:00 UTC 2026
+User: ec2-user
+=== Test Successful ===
+```
+
+5. **If successful**: Your Harness-to-EC2 connection is working!
+6. **If failed**: Check the error message and go to [Troubleshooting](#troubleshooting)
+
+---
+
+### Test 4: Run a Connectivity Test Pipeline (ECS)
+
+This pipeline deploys a simple container to verify ECS connectivity.
+
+#### Step 4.1: Create a New Pipeline
+
+1. Click **Pipelines** → **+ Create Pipeline**
+2. Name: **ECS-Connectivity-Test**
+3. Click **Start**
+
+#### Step 4.2: Add an ECS Stage
+
+1. Click **+ Add Stage**
+2. Stage type: **Deploy**
+3. Stage name: **Test ECS Connection**
+4. Deployment type: **Amazon ECS**
+5. Click **Set Up Stage**
+
+#### Step 4.3: Configure the Service
+
+1. Click **+ Add Service**
+2. Service name: **ecs-test-service**
+3. Deployment type: **Amazon ECS**
+4. For the container image, use: **nginx:latest** (a simple public image)
+5. Click **Save**
+
+#### Step 4.4: Configure the Environment and Infrastructure
+
+1. Select your environment
+2. Select your ECS infrastructure definition
+3. Confirm the cluster name appears
+
+#### Step 4.5: Configure the Execution
+
+1. In **Execution**, add an **ECS Rolling Deploy** step (or use the default)
+2. Use default settings
+
+#### Step 4.6: Save and Run
+
+1. Click **Save**
+2. Click **Run** → **Run Pipeline**
+
+#### Step 4.7: Verify in AWS Console
+
+1. After the pipeline completes, open AWS Console
+2. Go to **ECS** → **Clusters** → your cluster
+3. Click on **Tasks** tab
+4. You should see a running task with the nginx container
+
+5. **If successful**: Your Harness-to-ECS connection is working!
+6. **If failed**: Check the error in Harness and go to [Troubleshooting](#troubleshooting)
+
+---
+
+### Quick Connectivity Test Summary
+
+| Test | What It Proves |
+|------|----------------|
+| Connector Test | Harness can authenticate to AWS |
+| Infrastructure Test | Harness can discover EC2 instances |
+| EC2 Pipeline | Harness can SSH to EC2 and run commands |
+| ECS Pipeline | Harness can deploy containers to ECS |
 
 ---
 
