@@ -367,85 +367,173 @@ Before continuing, confirm you have completed the **EC2 Only Setup** above:
 
 ### Step 4: Configure Credentials
 
-Choose **Option A** (Access Keys) or **Option B** (Assume Role) based on what you created in AWS.
+You will see these credential options:
+- **AWS Access Key** — Enter Access Key ID + Secret (Recommended)
+- **Assume IAM role on Delegate** — Delegate uses its own attached IAM role
+- **Use IRSA** — For Kubernetes with IAM Roles for Service Accounts
+- **Use OIDC** — For OpenID Connect federation
 
-#### Option A: Using Access Keys (Recommended for Getting Started)
-
-1. **Credentials Type**: Select **AWS Access Key**
-
-2. **Access Key**: 
-   - Paste your **Access Key ID** (starts with `AKIA...`)
-
-3. **Secret Key** - Create a Secret:
-   - Click **Create or Select a Secret**
-   - Click **+ New Secret Text**
-   - **Secret Name**: `aws-secret-access-key`
-   - **Secret Value**: Paste your **Secret Access Key** (the 40-character key)
-   - Click **Save**
-   - The secret is now selected
-
-4. Click **Continue**
-
-#### Option B: Using Assume Role on Delegate
-
-1. **Credentials Type**: Select **Assume Role on Delegate**
-
-2. **Role ARN**: 
-   - Paste your Role ARN: `arn:aws:iam::YOUR_ACCOUNT_ID:role/HarnessEC2Role`
-
-3. **External ID**: (leave empty unless required for cross-account)
-
-4. **Assume Role Duration**: (leave default)
-
-5. Click **Continue**
+Choose the option that matches your setup:
 
 ---
 
-### Step 5: Select Connectivity Mode
+#### Option A: AWS Access Key (Recommended for Getting Started)
+
+Use this if you created an IAM user with Access Keys.
+
+1. Select **AWS Access Key**
+
+2. **Access Key ID**: 
+   - Paste your **Access Key ID** (starts with `AKIA...`, 20 characters)
+
+3. **Secret Access Key** - Create a Secret:
+   - Click **Create or Select a Secret**
+   - Click **+ New Secret Text**
+   - **Secret Name**: `aws-secret-access-key`
+   - **Secret Value**: Paste your **Secret Access Key** (40 characters)
+   - Click **Save**
+   - The secret is now selected
+
+4. **Test Region**: Select your AWS region (e.g., `Asia Pacific (Mumbai)`)
+
+5. (Optional) **Enable cross-account access (STS Role)**:
+   - Check this box if you want to assume a different role after authenticating
+   - Enter the **Role ARN** to assume
+   - Enter **External ID** if required
+
+6. Click **Continue**
+
+---
+
+#### Option B: Assume IAM Role on Delegate
+
+Use this if your Harness Delegate is running on an EC2 instance or EKS cluster that already has an IAM role attached.
+
+**Prerequisites:**
+- Your Harness Delegate must be running on infrastructure with an IAM role attached
+- Example: EC2 instance with an instance profile, or EKS node with a node role
+- The attached role must have `AmazonEC2FullAccess` policy
+
+**Steps:**
+
+1. Select **Assume IAM role on Delegate**
+
+2. **Test Region**: Select your AWS region
+   - Choose from the dropdown (e.g., `Asia Pacific (Mumbai)`, `Asia Pacific (Hyderabad)`)
+
+3. (Optional) **Enable cross-account access (STS Role)**:
+   - Check this box if you want to assume a different role
+   - Enter the **Role ARN** to assume: `arn:aws:iam::YOUR_ACCOUNT_ID:role/HarnessEC2Role`
+   - Enter **External ID** if required
+   - Enter **Assume Role Duration** (default is fine)
+
+4. Click **Continue**
+
+> **Note:** With "Assume IAM role on Delegate", Harness uses whatever IAM role is attached to the Delegate's host. You don't enter credentials here — the Delegate inherits permissions from its environment.
+
+---
+
+#### Option C: Use IRSA (For EKS/Kubernetes)
+
+Use this if your Delegate runs on Amazon EKS with IAM Roles for Service Accounts configured.
+
+1. Select **Use IRSA**
+2. **Test Region**: Select your AWS region
+3. Click **Continue**
+
+---
+
+#### Option D: Use OIDC (For OpenID Connect)
+
+Use this for federated authentication via OIDC.
+
+1. Select **Use OIDC**
+2. Configure OIDC settings as per your identity provider
+3. Click **Continue**
+
+---
+
+### Step 5: AWS Backoff Strategy
+
+This step configures retry behavior for AWS API calls.
+
+1. **Leave defaults** (recommended for most cases):
+   - Fixed Delay Base: 0 (or default)
+   - Equal Jitter Base: 0 (or default)
+   - Full Jitter Base: 0 (or default)
+
+2. Click **Continue**
+
+> **Tip:** You can skip customizing this unless you have specific AWS rate limiting issues.
+
+---
+
+### Step 6: Select Connectivity Mode
 
 1. **Choose how Harness connects to AWS:**
 
    **Option 1: Connect through Harness Platform** (Simpler)
    - Select **Connect through Harness Platform**
-   - Harness connects directly to AWS
+   - Harness SaaS connects directly to AWS over the internet
    - No delegate required
+   - **Use this if:** Your AWS resources are publicly accessible
 
    **Option 2: Connect through a Harness Delegate** (More Secure)
    - Select **Connect through a Harness Delegate**
-   - Click **Select Delegate**
-   - Choose your delegate from the list
-   - This is required if your AWS resources are in a private network
+   - Harness uses a delegate in your network to connect to AWS
+   - **Use this if:** Your AWS resources are in a private VPC
 
 2. Click **Continue**
 
 ---
 
-### Step 6: Test the Connection
+### Step 7: Delegates Setup
 
-1. **Click Test Connection**
+If you selected "Connect through a Harness Delegate":
+
+1. **Select a Delegate:**
+   - Choose an existing delegate from the list, OR
+   - Click **Install new Delegate** if you don't have one
+
+2. **Delegate Selection:**
+   - Select delegates by **Tags** or **Specific Delegates**
+   - Choose the delegate that has network access to your AWS resources
+
+3. Click **Continue**
+
+If you selected "Connect through Harness Platform":
+- This step may be skipped or show minimal options
+- Click **Continue**
+
+---
+
+### Step 8: Connection Test
+
+1. Click **Test Connection**
    - Harness will attempt to connect to AWS using your credentials
    - Wait for the test to complete (10-30 seconds)
 
 2. **Check the result:**
    - ✅ **Connection Successful**: Your connector is working!
-   - ❌ **Connection Failed**: Check the error message and verify:
-     - Access Key ID is correct
-     - Secret Access Key is correct
-     - IAM user/role has `AmazonEC2FullAccess` policy attached
-     - No typos in the Role ARN (if using assume role)
+   - ❌ **Connection Failed**: Check the error message
 
-3. Click **Finish**
+3. **If Connection Failed, verify:**
+   - Access Key ID is correct (no extra spaces)
+   - Secret Access Key is correct
+   - IAM user/role has `AmazonEC2FullAccess` policy attached
+   - If using Delegate: Delegate is running and has network access to AWS
+   - Test Region is correct
 
----
+4. Click **Finish**
 
-### Step 7: Verify the Connector Was Created
+### Step 9: Verify the Connector Was Created
 
 1. You should now see **AWS-EC2-Connector** in your Connectors list
 2. The status should show as **Connected** or have a green indicator
 
 ---
 
-### Step 8: Create a Secret for SSH Key (For EC2 Connection)
+### Step 10: Create a Secret for SSH Key (For EC2 Connection)
 
 To connect to EC2 instances, you need an SSH key stored in Harness.
 
@@ -474,7 +562,7 @@ To connect to EC2 instances, you need an SSH key stored in Harness.
 
 ---
 
-### Step 9: Create an Environment
+### Step 11: Create an Environment
 
 1. **Go to Environments**
    - In the left sidebar, click **Environments**
@@ -487,7 +575,7 @@ To connect to EC2 instances, you need an SSH key stored in Harness.
 
 ---
 
-### Step 10: Create Infrastructure Definition
+### Step 12: Create Infrastructure Definition
 
 1. **Open your Environment**
    - Click on the environment you just created (e.g., `EC2-Production`)
