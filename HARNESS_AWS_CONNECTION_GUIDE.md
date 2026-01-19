@@ -25,6 +25,14 @@ This guide provides detailed step-by-step instructions for connecting Harness to
 - Harness account with appropriate permissions
 - Access to Harness UI (Manager or Admin role)
 
+### Scope Note: Project vs Organization Permissions
+If you only have **project-level permissions**, you can still create the AWS connector and all deployment entities as long as:
+- You have access to the **Project** and the target **Environment(s)**.
+- Your role includes **Connector: Create/Edit** at the **Project** scope.
+- You can create **Services**, **Environments**, **Infrastructure Definitions**, and **Workflows/Pipelines** in the Project.
+
+If you do not have those project-level permissions, ask an Org/Admin to grant them or to create the connector at the Org scope and share it with your project.
+
 ### AWS IAM Permissions Required
 
 **For EC2:**
@@ -130,6 +138,7 @@ This guide provides detailed step-by-step instructions for connecting Harness to
 2. **Navigate to Cloud Providers**
    - Click on "Setup" in the left navigation menu
    - Click on "Cloud Providers" under "Connectors"
+   - **If you only have project-level permissions**: make sure the **Project** is selected in the scope switcher, then create the connector at **Project** scope
 
 3. **Add New Cloud Provider**
    - Click "New Cloud Provider" button
@@ -169,6 +178,7 @@ This guide provides detailed step-by-step instructions for connecting Harness to
    - Go to your Harness Application
    - Select an Environment (or create a new one)
    - Click on "Infrastructure Definition"
+   - **Project-level access**: ensure the Environment and Infrastructure are created in your **Project** scope
 
 2. **Add Infrastructure**
    - Click "Add Infrastructure"
@@ -305,6 +315,7 @@ This guide provides detailed step-by-step instructions for connecting Harness to
    - Go to your Harness Application
    - Select an Environment (or create a new one)
    - Click on "Infrastructure Definition"
+   - **Project-level access**: ensure the Environment and Infrastructure are created in your **Project** scope
 
 2. **Add ECS Infrastructure**
    - Click "Add Infrastructure"
@@ -364,6 +375,7 @@ This guide provides detailed step-by-step instructions for connecting Harness to
 1. **Navigate to Workflow**
    - Go to your Workflow in Harness
    - Select or create an ECS deployment workflow
+   - **Project-level access**: workflows/pipelines are created within your **Project** scope
 
 2. **Configure Deployment Steps**
    - **Setup Container Instances**: Ensure container instances are available
