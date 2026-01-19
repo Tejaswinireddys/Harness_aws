@@ -63,6 +63,93 @@ If you do not have those project-level permissions, ask an Org/Admin to grant th
 - `ec2:DescribeInstances` (for ECS instances)
 - `iam:PassRole` (for ECS task execution roles)
 
+### Detailed Steps: Add AWS IAM Permissions
+
+Use this section if you need to **create and attach a custom policy** instead of using AWS managed policies.
+
+#### Step A: Create a Custom IAM Policy
+
+1. **Open IAM Policies**
+   - AWS Console → **IAM** → **Policies**
+   - Click **Create policy**
+2. **Choose JSON**
+   - Select the **JSON** tab
+   - Paste the policy below (remove EC2 or ECS actions if not needed)
+3. **Review and Create**
+   - Click **Next**
+   - **Name**: `HarnessAWSAccess` (example)
+   - **Description**: `Permissions for Harness EC2/ECS deployments`
+   - Click **Create policy**
+
+**Sample policy (EC2 + ECS):**
+```
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EC2ReadWrite",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeTags",
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:RebootInstances"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECSAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:ListClusters",
+        "ecs:DescribeClusters",
+        "ecs:ListServices",
+        "ecs:DescribeServices",
+        "ecs:UpdateService",
+        "ecs:RegisterTaskDefinition",
+        "ecs:ListTaskDefinitions",
+        "ecs:DescribeTaskDefinition",
+        "ecs:RunTask",
+        "ecs:ListTasks",
+        "ecs:DescribeTasks"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleForEcsTasks",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::123456789012:role/YourEcsTaskExecutionRole"
+    }
+  ]
+}
+```
+
+> Tip: replace the `iam:PassRole` resource with your **actual task execution role ARN**. You can also scope EC2/ECS resources to specific ARNs for least privilege.
+
+#### Step B: Attach the Policy to a User
+
+1. **IAM → Users → select user**
+2. **Permissions tab → Add permissions**
+3. Choose **Attach policies directly**
+4. Search for `HarnessAWSAccess` (or your policy name)
+5. Select it → **Next** → **Add permissions**
+
+#### Step C: Attach the Policy to a Role
+
+1. **IAM → Roles → select role**
+2. **Permissions tab → Add permissions**
+3. Choose **Attach policies**
+4. Search for `HarnessAWSAccess` (or your policy name)
+5. Select it → **Add permissions**
+
 ---
 
 ## Part 1: Connecting Harness to AWS EC2 Instances
