@@ -325,82 +325,218 @@ You can now proceed to:
 Before continuing, confirm you have completed the **EC2 Only Setup** above:
 
 - [ ] **HarnessEC2Role** created with **AmazonEC2FullAccess** attached
-- [ ] **Role ARN copied** (or Access Key ID + Secret Access Key if using a user)
+- [ ] **Role ARN copied** OR **Access Key ID + Secret Access Key** if using a user
 
-### Step 2: Configure AWS Cloud Provider in Harness
+---
+
+### Step 2: Navigate to Connectors in Harness
 
 1. **Log in to Harness**
-   - Navigate to your Harness instance URL
+   - Open your browser and go to your Harness URL
    - Sign in with your credentials
 
-2. **Navigate to Cloud Providers**
-   - Click on "Setup" in the left navigation menu
-   - Click on "Cloud Providers" under "Connectors"
-   - **If you only have project-level permissions**: make sure the **Project** is selected in the scope switcher, then create the connector at **Project** scope
+2. **Select your Project**
+   - In the left sidebar, you should see your project name (e.g., **OnDot**)
+   - Make sure you are in the correct project
 
-3. **Add New Cloud Provider**
-   - Click "New Cloud Provider" button
-   - Select "AWS" from the list of cloud providers
+3. **Go to Project Settings**
+   - In the left sidebar, scroll down and click **Project Settings**
 
-4. **Configure AWS Connection**
+4. **Click on Connectors**
+   - Under **Project-level resources**, click **Connectors**
+   - You will see a list of existing connectors (may be empty)
 
-   **If using IAM User (Access Keys):**
-   - **Name**: Enter a descriptive name (e.g., `AWS-EC2-Connection`)
-   - **Type**: Select "AWS Access Key"
-   - **Access Key**: Paste the Access Key ID from Step 1
-   - **Secret Key**: Paste the Secret Access Key from Step 1
-   - **Region**: Select your primary AWS region (e.g., `us-east-1`)
-   - **Use IRSA**: Leave unchecked (unless using IAM Roles for Service Accounts)
-   - **Use Assume IAM Role on Delegate**: Leave unchecked (unless using delegate-based role assumption)
-   - **Assume IAM Role on Delegate**: Leave empty (unless using)
-   - **Test Connection**: Click "Test" to verify connectivity
-   - Click "Submit" if test is successful
+---
 
-   **If using IAM Role:**
-   - **Name**: Enter a descriptive name (e.g., `AWS-EC2-Connection-Role`)
-   - **Type**: Select "IAM Role"
-   - **Role ARN**: Paste the Role ARN from Step 1
-   - **External ID**: Enter if required (for cross-account access)
-   - **Region**: Select your primary AWS region
-   - **Use IRSA**: Check if using IAM Roles for Service Accounts
-   - **Test Connection**: Click "Test" to verify connectivity
-   - Click "Submit" if test is successful
+### Step 3: Create the AWS Connector
 
-5. **Verify Connection**
-   - You should see a success message
-   - The cloud provider should appear in your list
+1. **Click + New Connector**
+   - In the top right corner, click the **+ New Connector** button
 
-### Step 3: Configure EC2 Infrastructure in Harness
+2. **Select AWS**
+   - In the connector type list, under **Cloud Providers**, click **AWS**
 
-1. **Navigate to Infrastructure**
-   - Go to your Harness Application
-   - Select an Environment (or create a new one)
-   - Click on "Infrastructure Definition"
-   - **Project-level access**: ensure the Environment and Infrastructure are created in your **Project** scope
+3. **Overview - Name your connector**
+   - **Name**: `AWS-EC2-Connector`
+   - **ID**: (auto-generated, or customize it)
+   - **Description**: `AWS connector for EC2 deployments` (optional)
+   - **Tags**: (optional)
+   - Click **Continue**
 
-2. **Add Infrastructure**
-   - Click "Add Infrastructure"
-   - Select "AWS" as the infrastructure type
-   - Select "AWS EC2" as the deployment type
+---
 
-3. **Configure EC2 Infrastructure**
-   - **Name**: Enter infrastructure name (e.g., `EC2-Production`)
-   - **Cloud Provider**: Select the AWS cloud provider created in Step 2
-   - **Region**: Select the AWS region where your EC2 instances are located
-   - **VPC**: Select the VPC ID where your instances are located
-   - **Subnet**: Select the subnet ID (optional, can be auto-selected)
-   - **Security Group**: Select security group(s) for your instances
-   - **Host Connection Type**: Choose one:
-     - **SSH**: For SSH-based connections
-     - **WinRM**: For Windows instances
-     - **AWS Systems Manager (SSM)**: For managed instances
-   - **Host Connection Attributes**: Configure based on connection type:
-     - **For SSH**: Provide SSH key or credentials
-     - **For WinRM**: Provide WinRM credentials
-     - **For SSM**: Ensure instances have SSM agent installed
-   - Click "Submit"
+### Step 4: Configure Credentials
 
-### Step 4: Set Up Host Connection Attributes
+Choose **Option A** (Access Keys) or **Option B** (Assume Role) based on what you created in AWS.
+
+#### Option A: Using Access Keys (Recommended for Getting Started)
+
+1. **Credentials Type**: Select **AWS Access Key**
+
+2. **Access Key**: 
+   - Paste your **Access Key ID** (starts with `AKIA...`)
+
+3. **Secret Key** - Create a Secret:
+   - Click **Create or Select a Secret**
+   - Click **+ New Secret Text**
+   - **Secret Name**: `aws-secret-access-key`
+   - **Secret Value**: Paste your **Secret Access Key** (the 40-character key)
+   - Click **Save**
+   - The secret is now selected
+
+4. Click **Continue**
+
+#### Option B: Using Assume Role on Delegate
+
+1. **Credentials Type**: Select **Assume Role on Delegate**
+
+2. **Role ARN**: 
+   - Paste your Role ARN: `arn:aws:iam::YOUR_ACCOUNT_ID:role/HarnessEC2Role`
+
+3. **External ID**: (leave empty unless required for cross-account)
+
+4. **Assume Role Duration**: (leave default)
+
+5. Click **Continue**
+
+---
+
+### Step 5: Select Connectivity Mode
+
+1. **Choose how Harness connects to AWS:**
+
+   **Option 1: Connect through Harness Platform** (Simpler)
+   - Select **Connect through Harness Platform**
+   - Harness connects directly to AWS
+   - No delegate required
+
+   **Option 2: Connect through a Harness Delegate** (More Secure)
+   - Select **Connect through a Harness Delegate**
+   - Click **Select Delegate**
+   - Choose your delegate from the list
+   - This is required if your AWS resources are in a private network
+
+2. Click **Continue**
+
+---
+
+### Step 6: Test the Connection
+
+1. **Click Test Connection**
+   - Harness will attempt to connect to AWS using your credentials
+   - Wait for the test to complete (10-30 seconds)
+
+2. **Check the result:**
+   - ✅ **Connection Successful**: Your connector is working!
+   - ❌ **Connection Failed**: Check the error message and verify:
+     - Access Key ID is correct
+     - Secret Access Key is correct
+     - IAM user/role has `AmazonEC2FullAccess` policy attached
+     - No typos in the Role ARN (if using assume role)
+
+3. Click **Finish**
+
+---
+
+### Step 7: Verify the Connector Was Created
+
+1. You should now see **AWS-EC2-Connector** in your Connectors list
+2. The status should show as **Connected** or have a green indicator
+
+---
+
+### Step 8: Create a Secret for SSH Key (For EC2 Connection)
+
+To connect to EC2 instances, you need an SSH key stored in Harness.
+
+1. **Go to Secrets**
+   - In **Project Settings** → **Project-level resources**, click **Secrets**
+
+2. **Create SSH Key Secret**
+   - Click **+ New Secret**
+   - Select **SSH Credential**
+
+3. **Configure SSH Credential**
+   - **Name**: `ec2-ssh-key`
+   - **SSH Credential Type**: Select **Key File** (recommended) or **Password**
+   
+   **If using Key File:**
+   - **Username**: `ec2-user` (for Amazon Linux) or `ubuntu` (for Ubuntu)
+   - **Select or Create a SSH Key**:
+     - Click **Create or Select a Secret**
+     - Click **+ New Secret File**
+     - **Name**: `ec2-private-key`
+     - **Select File**: Upload your `.pem` private key file
+     - Click **Save**
+   - **Passphrase**: (leave empty unless your key has a passphrase)
+
+4. Click **Save**
+
+---
+
+### Step 9: Create an Environment
+
+1. **Go to Environments**
+   - In the left sidebar, click **Environments**
+
+2. **Create New Environment**
+   - Click **+ New Environment**
+   - **Name**: `EC2-Production` (or your preferred name)
+   - **Environment Type**: Select **Production** or **Pre-Production**
+   - Click **Save**
+
+---
+
+### Step 10: Create Infrastructure Definition
+
+1. **Open your Environment**
+   - Click on the environment you just created (e.g., `EC2-Production`)
+
+2. **Go to Infrastructure Definitions**
+   - Click the **Infrastructure Definitions** tab
+
+3. **Create New Infrastructure**
+   - Click **+ New Infrastructure**
+
+4. **Configure Infrastructure**
+   - **Name**: `ec2-infra`
+   - **Deployment Type**: Select **Secure Shell (SSH)**
+   - Click **Continue**
+
+5. **Infrastructure Details**
+   - **Connector**: Select **AWS-EC2-Connector** (the one you created)
+   - **Region**: Select your AWS region (e.g., `us-east-1`)
+   - **Host Connection Type**: Select **AWS Instance Filter** or **Hostname**
+   
+   **If using AWS Instance Filter:**
+   - **VPC**: Select your VPC
+   - **Tags** (optional): Filter by tags like `Environment: Production`
+   
+   **If using Hostname:**
+   - Enter the EC2 instance IP or hostname directly
+
+6. **Host Connection Attributes**
+   - **SSH Connection Attribute**: Select `ec2-ssh-key` (the SSH secret you created)
+
+7. Click **Save**
+
+---
+
+### EC2 Connection Complete!
+
+You now have:
+- ✅ AWS Connector configured
+- ✅ SSH Key secret stored
+- ✅ Environment created
+- ✅ Infrastructure definition with EC2 connection
+
+Next: Go to [Verification and Testing](#verification-and-testing) to run a connectivity test pipeline.
+
+---
+
+### (Reference) Older Harness UI - Set Up Host Connection Attributes
+
+If you're using an older version of Harness:
 
 #### For SSH Connection:
 
