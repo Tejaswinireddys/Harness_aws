@@ -1,0 +1,105 @@
+---
+# =============================================================================
+# RabbitMQ Cluster Formation Tasks
+# =============================================================================
+
+- name: Get current cluster status
+  ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+  register: cluster_status_raw
+  changed_when: false
+  ignore_errors: yes
+
+- name: Parse cluster status
+  ansible.builtin.set_fact:
+    current_cluster_nodes: "{{ (cluster_status_raw.stdout | from_json).running_nodes | default([]) }}"
+  when: cluster_status_raw.rc == 0
+  ignore_errors: yes
+
+- name: Set cluster master node
+  ansible.builtin.set_fact:
+    cluster_master_node: "rabbit@{{ rabbitmq_cluster_master }}"
+
+- name: Display cluster configuration
+  ansible.builtin.debug:
+    msg: |
+      Cluster Master: {{ rabbitmq_cluster_master }}
+      Current Node: {{ inventory_hostname }}
+      Is Master: {{ inventory_hostname == rabbitmq_cluster_master }}
+
+# ============================================================================
+# Master Node Configuration
+# ============================================================================
+- name: Ensure RabbitMQ is running on master node
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: started
+  when: inventory_hostname == rabbitmq_cluster_master
+
+# ============================================================================
+# Non-Master Node Cluster Join
+# ============================================================================
+- name: Join cluster on non-master nodes
+  when:
+    - inventory_hostname != rabbitmq_cluster_master
+  block:
+    - name: Check if already in correct cluster
+      ansible.builtin.shell: |
+        rabbitmqctl cluster_status | grep -q "rabbit@{{ rabbitmq_cluster_master }}"
+      register: already_clustered
+      changed_when: false
+      failed_when: false
+
+    - name: Stop RabbitMQ application for cluster join
+      ansible.builtin.command: rabbitmqctl stop_app
+      when: already_clustered.rc != 0
+
+    - name: Reset RabbitMQ node
+      ansible.builtin.command: rabbitmqctl reset
+      when: already_clustered.rc != 0
+      ignore_errors: yes
+
+    - name: Join RabbitMQ cluster
+      ansible.builtin.command: "rabbitmqctl join_cluster {{ cluster_master_node }}"
+      when: already_clustered.rc != 0
+      register: join_result
+      retries: 3
+      delay: 10
+      until: join_result.rc == 0
+
+    - name: Start RabbitMQ application after cluster join
+      ansible.builtin.command: rabbitmqctl start_app
+      when: already_clustered.rc != 0
+
+    - name: Wait for node to become ready
+      ansible.builtin.pause:
+        seconds: 15
+      when: already_clustered.rc != 0
+
+# ============================================================================
+# Cluster Verification
+# ============================================================================
+- name: Verify cluster formation
+  ansible.builtin.command: rabbitmqctl cluster_status
+  register: final_cluster_status
+  changed_when: false
+
+- name: Display final cluster status
+  ansible.builtin.debug:
+    var: final_cluster_status.stdout_lines
+
+- name: Verify all nodes are in cluster
+  ansible.builtin.shell: |
+    rabbitmqctl cluster_status | grep -c "rabbit@"
+  register: node_count
+  changed_when: false
+  failed_when: node_count.stdout | int < groups['rabbitmq_cluster'] | length
+  when: inventory_hostname == rabbitmq_cluster_master
+
+# ============================================================================
+# Cluster Name Configuration (Master Only)
+# ============================================================================
+- name: Set cluster name
+  ansible.builtin.command: "rabbitmqctl set_cluster_name {{ environment_name }}-rabbitmq-cluster"
+  when: inventory_hostname == rabbitmq_cluster_master
+  changed_when: false
+  ignore_errors: yes

@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# RabbitMQ 4.x Cluster Installation and Configuration
+# Main Tasks File
+# =============================================================================
+
+- name: Display deployment information
+  ansible.builtin.debug:
+    msg: |
+      Deploying RabbitMQ {{ rabbitmq_version }} with Erlang {{ erlang_version }}
+      Environment: {{ environment_name }}
+      Node: {{ inventory_hostname }}
+      Node Type: {{ rabbitmq_node_type | default('disc') }}
+  tags: always
+
+- name: Include OS-specific variables
+  ansible.builtin.include_vars: "{{ item }}"
+  with_first_found:
+    - "{{ ansible_distribution }}-{{ ansible_distribution_major_version }}.yml"
+    - "{{ ansible_distribution }}.yml"
+    - "{{ ansible_os_family }}.yml"
+    - "default.yml"
+  tags: always
+  ignore_errors: yes
+
+- name: Run pre-flight checks
+  ansible.builtin.include_tasks: preflight.yml
+  tags:
+    - preflight
+    - always
+
+- name: Install Erlang
+  ansible.builtin.include_tasks: install_erlang.yml
+  tags:
+    - install
+    - erlang
+
+- name: Install RabbitMQ
+  ansible.builtin.include_tasks: install_rabbitmq.yml
+  tags:
+    - install
+    - rabbitmq
+
+- name: Configure RabbitMQ
+  ansible.builtin.include_tasks: configure.yml
+  tags:
+    - configure
+    - rabbitmq
+
+- name: Configure RabbitMQ Cluster
+  ansible.builtin.include_tasks: cluster.yml
+  tags:
+    - cluster
+    - rabbitmq
+
+- name: Configure RabbitMQ Users and Vhosts
+  ansible.builtin.include_tasks: users.yml
+  tags:
+    - users
+    - rabbitmq
+
+- name: Run post-deployment validation
+  ansible.builtin.include_tasks: validate.yml
+  tags:
+    - validate
+    - always

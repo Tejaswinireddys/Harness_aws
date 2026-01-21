@@ -1,0 +1,54 @@
+---
+# =============================================================================
+# RabbitMQ Role Default Variables
+# These can be overridden in inventory group_vars or host_vars
+# =============================================================================
+
+# Environment
+environment_name: dev
+domain_name: example.com
+
+# Erlang Configuration
+erlang_version: "26.2"
+erlang_cookie: "CHANGE_THIS_COOKIE_IN_PRODUCTION"
+
+# RabbitMQ Version
+rabbitmq_version: "4.0.2"
+
+# RabbitMQ Plugins
+rabbitmq_plugins:
+  - rabbitmq_management
+  - rabbitmq_prometheus
+
+# Network Configuration
+rabbitmq_tcp_listen_port: 5672
+rabbitmq_management_port: 15672
+rabbitmq_prometheus_port: 15692
+
+# Default Credentials
+rabbitmq_default_vhost: "/"
+rabbitmq_default_user: "admin"
+rabbitmq_default_pass: "admin123"
+rabbitmq_default_user_tags: "administrator"
+
+# Memory Configuration
+rabbitmq_vm_memory_high_watermark: 0.6
+rabbitmq_disk_free_limit_relative: 1.5
+
+# Cluster Configuration
+rabbitmq_cluster_partition_handling: pause_minority
+rabbitmq_collect_statistics_interval: 5000
+
+# TLS Configuration
+rabbitmq_ssl_enabled: false
+
+# System Limits
+rabbitmq_ulimit_nofile: 65536
+rabbitmq_ulimit_nproc: 65536
+
+# Logging
+rabbitmq_log_level: info
+rabbitmq_log_rotation_count: 7
+
+# Node Type
+rabbitmq_node_type: disc

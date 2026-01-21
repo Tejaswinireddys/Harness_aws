@@ -1,0 +1,114 @@
+---
+# =============================================================================
+# RabbitMQ Users, Vhosts, and Policies Configuration
+# Executed on Master Node Only (cluster-wide operations)
+# =============================================================================
+
+- name: Configure users, vhosts, and policies on master node
+  when: inventory_hostname == rabbitmq_cluster_master
+  block:
+
+    # =========================================================================
+    # Remove Default Guest User
+    # =========================================================================
+    - name: Check if guest user exists
+      ansible.builtin.command: rabbitmqctl list_users
+      register: user_list
+      changed_when: false
+
+    - name: Remove default guest user
+      ansible.builtin.command: rabbitmqctl delete_user guest
+      when: "'guest' in user_list.stdout"
+      ignore_errors: yes
+
+    # =========================================================================
+    # Virtual Hosts Configuration
+    # =========================================================================
+    - name: Create virtual hosts
+      ansible.builtin.command: "rabbitmqctl add_vhost {{ item.name }}"
+      loop: "{{ rabbitmq_vhosts }}"
+      when: item.state == 'present'
+      register: vhost_result
+      changed_when: "'already exists' not in vhost_result.stderr | default('')"
+      failed_when: false
+
+    # =========================================================================
+    # Users Configuration
+    # =========================================================================
+    - name: Create RabbitMQ users
+      ansible.builtin.command: "rabbitmqctl add_user {{ item.name }} '{{ item.password }}'"
+      loop: "{{ rabbitmq_users }}"
+      no_log: true
+      register: user_create_result
+      changed_when: "'already exists' not in user_create_result.stderr | default('')"
+      failed_when: false
+
+    - name: Update user passwords (if user exists)
+      ansible.builtin.command: "rabbitmqctl change_password {{ item.name }} '{{ item.password }}'"
+      loop: "{{ rabbitmq_users }}"
+      no_log: true
+      changed_when: false
+      failed_when: false
+
+    - name: Set user tags
+      ansible.builtin.command: "rabbitmqctl set_user_tags {{ item.name }} {{ item.tags }}"
+      loop: "{{ rabbitmq_users }}"
+      when: item.tags | length > 0
+      changed_when: false
+      failed_when: false
+
+    - name: Set user permissions
+      ansible.builtin.command: >
+        rabbitmqctl set_permissions -p {{ item.vhost }}
+        {{ item.name }}
+        '{{ item.configure_priv }}'
+        '{{ item.write_priv }}'
+        '{{ item.read_priv }}'
+      loop: "{{ rabbitmq_users }}"
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # HA Policies Configuration
+    # =========================================================================
+    - name: Set HA policies for queues
+      ansible.builtin.command: >
+        rabbitmqctl set_policy -p {{ item.vhost }}
+        {{ item.name }}
+        '{{ item.pattern }}'
+        '{"ha-mode":"{{ item.tags["ha-mode"] }}","ha-sync-mode":"{{ item.tags["ha-sync-mode"] }}"}'
+        --priority {{ item.priority }}
+        --apply-to all
+      loop: "{{ rabbitmq_policies }}"
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # Verify Configuration
+    # =========================================================================
+    - name: List all users
+      ansible.builtin.command: rabbitmqctl list_users
+      register: final_users
+      changed_when: false
+
+    - name: Display configured users
+      ansible.builtin.debug:
+        var: final_users.stdout_lines
+
+    - name: List all vhosts
+      ansible.builtin.command: rabbitmqctl list_vhosts
+      register: final_vhosts
+      changed_when: false
+
+    - name: Display configured vhosts
+      ansible.builtin.debug:
+        var: final_vhosts.stdout_lines
+
+    - name: List all policies
+      ansible.builtin.command: rabbitmqctl list_policies
+      register: final_policies
+      changed_when: false
+
+    - name: Display configured policies
+      ansible.builtin.debug:
+        var: final_policies.stdout_lines

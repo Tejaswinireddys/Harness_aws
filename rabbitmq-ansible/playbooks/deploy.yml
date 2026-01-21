@@ -1,0 +1,67 @@
+---
+# =============================================================================
+# RabbitMQ 4.x Cluster Deployment Playbook
+# =============================================================================
+# Usage:
+#   ansible-playbook -i inventory/dev/hosts.yml playbooks/deploy.yml
+#   ansible-playbook -i inventory/staging/hosts.yml playbooks/deploy.yml
+#   ansible-playbook -i inventory/production/hosts.yml playbooks/deploy.yml
+#
+# Tags:
+#   - preflight    : Run pre-flight checks only
+#   - install      : Install Erlang and RabbitMQ
+#   - configure    : Configure RabbitMQ
+#   - cluster      : Form cluster
+#   - users        : Configure users and policies
+#   - validate     : Run validation checks
+# =============================================================================
+
+- name: Deploy RabbitMQ 4.x Cluster
+  hosts: rabbitmq_cluster
+  become: yes
+  gather_facts: yes
+  serial: 1
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Display deployment information
+      ansible.builtin.debug:
+        msg: |
+          ==============================================
+          Starting RabbitMQ Cluster Deployment
+          ==============================================
+          Environment: {{ environment_name }}
+          Target Nodes: {{ groups['rabbitmq_cluster'] | join(', ') }}
+          RabbitMQ Version: {{ rabbitmq_version }}
+          Erlang Version: {{ erlang_version }}
+          ==============================================
+
+    - name: Verify connectivity to all cluster nodes
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: 22
+        timeout: 10
+      loop: "{{ groups['rabbitmq_cluster'] }}"
+      when: item != inventory_hostname
+      delegate_to: localhost
+      become: no
+
+  roles:
+    - role: rabbitmq
+      tags:
+        - rabbitmq
+
+  post_tasks:
+    - name: Final deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ==============================================
+          RabbitMQ Deployment Completed
+          ==============================================
+          Node: {{ inventory_hostname }}
+          Status: SUCCESS
+          Management UI: http://{{ ansible_host }}:{{ rabbitmq_management_port }}
+          AMQP Endpoint: amqp://{{ ansible_host }}:{{ rabbitmq_tcp_listen_port }}
+          ==============================================
+      run_once: yes
+      when: inventory_hostname == rabbitmq_cluster_master

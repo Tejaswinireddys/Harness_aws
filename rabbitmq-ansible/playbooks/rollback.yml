@@ -1,0 +1,91 @@
+---
+# =============================================================================
+# RabbitMQ Cluster Rollback Playbook
+# =============================================================================
+# Usage:
+#   ansible-playbook -i inventory/dev/hosts.yml playbooks/rollback.yml
+#
+# This playbook will:
+#   1. Stop RabbitMQ service on all nodes
+#   2. Remove cluster configuration
+#   3. Optionally restore from backup
+#   4. Restart services
+# =============================================================================
+
+- name: Rollback RabbitMQ Cluster
+  hosts: rabbitmq_cluster
+  become: yes
+  gather_facts: yes
+  serial: 1
+
+  vars:
+    rollback_backup_dir: "/backup/rabbitmq"
+    rollback_restore_from_backup: false
+
+  tasks:
+    - name: Display rollback warning
+      ansible.builtin.debug:
+        msg: |
+          !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+          WARNING: RabbitMQ Cluster Rollback
+          !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+          This will stop all RabbitMQ services and
+          reset the cluster configuration.
+          !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    - name: Stop RabbitMQ application
+      ansible.builtin.command: rabbitmqctl stop_app
+      ignore_errors: yes
+
+    - name: Stop RabbitMQ service
+      ansible.builtin.systemd:
+        name: rabbitmq-server
+        state: stopped
+      ignore_errors: yes
+
+    - name: Reset RabbitMQ node
+      ansible.builtin.command: rabbitmqctl reset
+      ignore_errors: yes
+      when: not rollback_restore_from_backup
+
+    - name: Restore from backup (if enabled)
+      when: rollback_restore_from_backup
+      block:
+        - name: Check if backup exists
+          ansible.builtin.stat:
+            path: "{{ rollback_backup_dir }}/latest"
+          register: backup_check
+
+        - name: Restore Mnesia database from backup
+          ansible.builtin.shell: |
+            rm -rf /var/lib/rabbitmq/mnesia
+            cp -a {{ rollback_backup_dir }}/latest/mnesia /var/lib/rabbitmq/
+            chown -R rabbitmq:rabbitmq /var/lib/rabbitmq/mnesia
+          when: backup_check.stat.exists
+
+        - name: Restore configuration from backup
+          ansible.builtin.shell: |
+            cp -a {{ rollback_backup_dir }}/latest/config/* /etc/rabbitmq/
+            chown -R rabbitmq:rabbitmq /etc/rabbitmq/
+          when: backup_check.stat.exists
+
+    - name: Start RabbitMQ service
+      ansible.builtin.systemd:
+        name: rabbitmq-server
+        state: started
+
+    - name: Wait for RabbitMQ to start
+      ansible.builtin.wait_for:
+        port: 5672
+        host: "{{ ansible_host }}"
+        delay: 10
+        timeout: 120
+
+    - name: Verify RabbitMQ status
+      ansible.builtin.command: rabbitmqctl status
+      register: status_check
+      changed_when: false
+
+    - name: Display rollback status
+      ansible.builtin.debug:
+        msg: "Rollback completed on {{ inventory_hostname }}"

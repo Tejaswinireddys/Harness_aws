@@ -1,0 +1,93 @@
+---
+# =============================================================================
+# RabbitMQ 4.x Cluster Configuration - Staging Environment
+# =============================================================================
+
+# Environment Identification
+environment_name: staging
+domain_name: example.com
+
+# Erlang Configuration
+erlang_version: "26.2"
+erlang_cookie: "{{ lookup('env', 'RABBITMQ_ERLANG_COOKIE') }}"
+
+# RabbitMQ Configuration
+rabbitmq_version: "4.0.2"
+rabbitmq_plugins:
+  - rabbitmq_management
+  - rabbitmq_prometheus
+  - rabbitmq_shovel
+  - rabbitmq_shovel_management
+  - rabbitmq_federation
+  - rabbitmq_federation_management
+
+# Credentials (from Harness Secrets)
+rabbitmq_default_vhost: "/"
+rabbitmq_default_user: "admin"
+rabbitmq_default_pass: "{{ lookup('env', 'RABBITMQ_ADMIN_PASSWORD') }}"
+rabbitmq_default_user_tags: "administrator"
+
+# Memory and Disk Configuration
+rabbitmq_vm_memory_high_watermark: 0.6
+rabbitmq_disk_free_limit_relative: 1.5
+
+# Cluster Configuration
+rabbitmq_cluster_partition_handling: pause_minority
+rabbitmq_collect_statistics_interval: 5000
+
+# Network Configuration
+rabbitmq_tcp_listen_port: 5672
+rabbitmq_management_port: 15672
+rabbitmq_prometheus_port: 15692
+
+# TLS Configuration (Enable for Staging)
+rabbitmq_ssl_enabled: false
+
+# Users Configuration
+rabbitmq_users:
+  - name: admin
+    password: "{{ rabbitmq_default_pass }}"
+    tags: administrator
+    vhost: /
+    configure_priv: ".*"
+    read_priv: ".*"
+    write_priv: ".*"
+  - name: monitoring
+    password: "{{ lookup('env', 'RABBITMQ_MONITORING_PASSWORD') }}"
+    tags: monitoring
+    vhost: /
+    configure_priv: ""
+    read_priv: ".*"
+    write_priv: ""
+  - name: app_user
+    password: "{{ lookup('env', 'RABBITMQ_APP_PASSWORD') }}"
+    tags: ""
+    vhost: /
+    configure_priv: ""
+    read_priv: ".*"
+    write_priv: ".*"
+
+# Virtual Hosts
+rabbitmq_vhosts:
+  - name: /
+    state: present
+  - name: /applications
+    state: present
+
+# Policies
+rabbitmq_policies:
+  - name: ha-all
+    vhost: /
+    pattern: ".*"
+    tags:
+      ha-mode: all
+      ha-sync-mode: automatic
+    priority: 0
+
+# System Limits
+rabbitmq_ulimit_nofile: 65536
+rabbitmq_ulimit_nproc: 65536
+
+# Logging
+rabbitmq_log_level: info
+rabbitmq_log_rotation_count: 7

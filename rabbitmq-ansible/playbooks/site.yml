@@ -1,0 +1,8 @@
+---
+# =============================================================================
+# RabbitMQ Cluster Site Playbook
+# Master playbook that includes all deployment stages
+# =============================================================================
+
+- name: Include deployment playbook
+  ansible.builtin.import_playbook: deploy.yml

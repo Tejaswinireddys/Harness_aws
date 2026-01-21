@@ -1,0 +1,136 @@
+---
+# =============================================================================
+# RabbitMQ 4.x Cluster Configuration - Development Environment
+# =============================================================================
+
+# Environment Identification
+environment_name: dev
+domain_name: example.com
+
+# =============================================================================
+# Erlang Configuration
+# =============================================================================
+erlang_version: "26.2"
+erlang_cookie: "{{ lookup('env', 'RABBITMQ_ERLANG_COOKIE') | default('CHANGE_THIS_IN_PRODUCTION_ENVIRONMENT', true) }}"
+
+# =============================================================================
+# RabbitMQ Configuration
+# =============================================================================
+rabbitmq_version: "4.0.2"
+rabbitmq_plugins:
+  - rabbitmq_management
+  - rabbitmq_prometheus
+  - rabbitmq_shovel
+  - rabbitmq_shovel_management
+  - rabbitmq_federation
+  - rabbitmq_federation_management
+  - rabbitmq_consistent_hash_exchange
+
+# Default credentials (override via environment variables in production)
+rabbitmq_default_vhost: "/"
+rabbitmq_default_user: "admin"
+rabbitmq_default_pass: "{{ lookup('env', 'RABBITMQ_ADMIN_PASSWORD') | default('admin123', true) }}"
+rabbitmq_default_user_tags: "administrator"
+
+# =============================================================================
+# Memory and Disk Configuration
+# =============================================================================
+# Memory high watermark - RabbitMQ will throttle when memory exceeds this
+rabbitmq_vm_memory_high_watermark: 0.6
+
+# Disk free limit - relative to total RAM
+rabbitmq_disk_free_limit_relative: 1.5
+
+# =============================================================================
+# Cluster Configuration
+# =============================================================================
+# Partition handling strategy
+# Options: pause_minority, pause_if_all_down, autoheal, ignore
+rabbitmq_cluster_partition_handling: pause_minority
+
+# Statistics collection interval (milliseconds)
+rabbitmq_collect_statistics_interval: 5000
+
+# =============================================================================
+# Network Configuration
+# =============================================================================
+rabbitmq_tcp_listen_port: 5672
+rabbitmq_management_port: 15672
+rabbitmq_prometheus_port: 15692
+
+# =============================================================================
+# TLS Configuration (Disabled for POC - Enable for Production)
+# =============================================================================
+rabbitmq_ssl_enabled: false
+rabbitmq_ssl_cert_path: "/etc/rabbitmq/ssl/cert.pem"
+rabbitmq_ssl_key_path: "/etc/rabbitmq/ssl/key.pem"
+rabbitmq_ssl_ca_path: "/etc/rabbitmq/ssl/ca.pem"
+
+# =============================================================================
+# Users Configuration
+# =============================================================================
+rabbitmq_users:
+  - name: admin
+    password: "{{ rabbitmq_default_pass }}"
+    tags: administrator
+    vhost: /
+    configure_priv: ".*"
+    read_priv: ".*"
+    write_priv: ".*"
+  - name: monitoring
+    password: "{{ lookup('env', 'RABBITMQ_MONITORING_PASSWORD') | default('monitoring123', true) }}"
+    tags: monitoring
+    vhost: /
+    configure_priv: ""
+    read_priv: ".*"
+    write_priv: ""
+  - name: app_user
+    password: "{{ lookup('env', 'RABBITMQ_APP_PASSWORD') | default('app123', true) }}"
+    tags: ""
+    vhost: /
+    configure_priv: ""
+    read_priv: ".*"
+    write_priv: ".*"
+
+# =============================================================================
+# Virtual Hosts Configuration
+# =============================================================================
+rabbitmq_vhosts:
+  - name: /
+    state: present
+  - name: /applications
+    state: present
+  - name: /monitoring
+    state: present
+
+# =============================================================================
+# Policies Configuration
+# =============================================================================
+rabbitmq_policies:
+  - name: ha-all
+    vhost: /
+    pattern: ".*"
+    tags:
+      ha-mode: all
+      ha-sync-mode: automatic
+    priority: 0
+  - name: ha-applications
+    vhost: /applications
+    pattern: ".*"
+    tags:
+      ha-mode: all
+      ha-sync-mode: automatic
+    priority: 0
+
+# =============================================================================
+# System Limits
+# =============================================================================
+rabbitmq_ulimit_nofile: 65536
+rabbitmq_ulimit_nproc: 65536
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+rabbitmq_log_level: info
+rabbitmq_log_rotation_days: 7
+rabbitmq_log_rotation_count: 7

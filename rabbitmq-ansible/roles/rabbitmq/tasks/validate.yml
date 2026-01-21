@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# Post-Deployment Validation Tasks
+# =============================================================================
+
+- name: Verify RabbitMQ service is running
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: started
+  register: service_status
+
+- name: Check RabbitMQ node health
+  ansible.builtin.command: rabbitmq-diagnostics check_running
+  register: health_check
+  changed_when: false
+  retries: 3
+  delay: 10
+  until: health_check.rc == 0
+
+- name: Check for local alarms
+  ansible.builtin.command: rabbitmq-diagnostics check_local_alarms
+  register: alarm_check
+  changed_when: false
+  failed_when: false
+
+- name: Display alarm status
+  ansible.builtin.debug:
+    msg: "{{ 'No alarms detected' if alarm_check.rc == 0 else 'WARNING: Alarms detected!' }}"
+
+- name: Verify AMQP port is listening
+  ansible.builtin.wait_for:
+    port: "{{ rabbitmq_tcp_listen_port }}"
+    host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+    timeout: 30
+
+- name: Verify Management port is listening
+  ansible.builtin.wait_for:
+    port: "{{ rabbitmq_management_port }}"
+    host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+    timeout: 30
+
+# ============================================================================
+# Cluster-wide Validation (Master Only)
+# ============================================================================
+- name: Run cluster-wide validation
+  when: inventory_hostname == rabbitmq_cluster_master
+  block:
+
+    - name: Get cluster status
+      ansible.builtin.command: rabbitmqctl cluster_status
+      register: cluster_status
+      changed_when: false
+
+    - name: Count running nodes
+      ansible.builtin.shell: |
+        rabbitmqctl cluster_status | grep -A100 "Running Nodes" | grep "rabbit@" | wc -l
+      register: running_nodes
+      changed_when: false
+
+    - name: Verify all nodes are running
+      ansible.builtin.assert:
+        that:
+          - running_nodes.stdout | int >= groups['rabbitmq_cluster'] | length
+        fail_msg: "Not all nodes are running. Expected: {{ groups['rabbitmq_cluster'] | length }}, Running: {{ running_nodes.stdout }}"
+        success_msg: "All {{ running_nodes.stdout }} cluster nodes are running"
+
+    - name: Check Management API health
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ rabbitmq_management_port }}/api/health/checks/alarms"
+        user: "{{ rabbitmq_default_user }}"
+        password: "{{ rabbitmq_default_pass }}"
+        method: GET
+        status_code: 200
+      register: api_health
+      retries: 5
+      delay: 10
+      until: api_health.status == 200
+
+    - name: Display API health response
+      ansible.builtin.debug:
+        msg: "Management API health check: {{ api_health.json.status | default('OK') }}"
+
+    - name: Get node statistics
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ rabbitmq_management_port }}/api/nodes"
+        user: "{{ rabbitmq_default_user }}"
+        password: "{{ rabbitmq_default_pass }}"
+        method: GET
+        status_code: 200
+      register: node_stats
+
+    - name: Display node summary
+      ansible.builtin.debug:
+        msg: |
+          Node: {{ item.name }}
+          Running: {{ item.running }}
+          Memory Used: {{ (item.mem_used / 1024 / 1024) | round(2) }} MB
+          Disk Free: {{ (item.disk_free / 1024 / 1024 / 1024) | round(2) }} GB
+      loop: "{{ node_stats.json }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+# ============================================================================
+# Final Summary
+# ============================================================================
+- name: Display deployment summary
+  ansible.builtin.debug:
+    msg: |
+      =====================================================
+      RabbitMQ Deployment Complete on {{ inventory_hostname }}
+      =====================================================
+      - Environment: {{ environment_name }}
+      - RabbitMQ Version: {{ rabbitmq_version }}
+      - Erlang Version: {{ erlang_version }}
+      - Node Type: {{ rabbitmq_node_type | default('disc') }}
+      - AMQP Port: {{ rabbitmq_tcp_listen_port }}
+      - Management URL: http://{{ ansible_host }}:{{ rabbitmq_management_port }}
+      =====================================================

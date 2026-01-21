@@ -1,0 +1,98 @@
+---
+# =============================================================================
+# RabbitMQ Configuration Tasks
+# =============================================================================
+
+- name: Stop RabbitMQ service for configuration
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: stopped
+  register: stop_result
+  ignore_errors: yes
+
+- name: Set Erlang cookie
+  ansible.builtin.template:
+    src: erlang.cookie.j2
+    dest: /var/lib/rabbitmq/.erlang.cookie
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0400'
+  no_log: true
+
+- name: Deploy main RabbitMQ configuration
+  ansible.builtin.template:
+    src: rabbitmq.conf.j2
+    dest: /etc/rabbitmq/rabbitmq.conf
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0644'
+    backup: yes
+  notify: Restart RabbitMQ
+
+- name: Deploy RabbitMQ environment configuration
+  ansible.builtin.template:
+    src: rabbitmq-env.conf.j2
+    dest: /etc/rabbitmq/rabbitmq-env.conf
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0644'
+  notify: Restart RabbitMQ
+
+- name: Deploy enabled plugins configuration
+  ansible.builtin.template:
+    src: enabled_plugins.j2
+    dest: /etc/rabbitmq/enabled_plugins
+    owner: rabbitmq
+    group: rabbitmq
+    mode: '0644'
+  notify: Restart RabbitMQ
+
+- name: Configure firewall for RabbitMQ (if firewalld is active)
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  loop:
+    - "{{ rabbitmq_tcp_listen_port }}"
+    - "{{ rabbitmq_management_port }}"
+    - "{{ rabbitmq_prometheus_port }}"
+    - 4369
+    - 25672
+    - 35672-35682
+  when: ansible_facts.services['firewalld.service'] is defined and ansible_facts.services['firewalld.service'].state == 'running'
+  ignore_errors: yes
+
+- name: Start RabbitMQ service
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: started
+    enabled: yes
+
+- name: Wait for RabbitMQ to start
+  ansible.builtin.wait_for:
+    port: "{{ rabbitmq_tcp_listen_port }}"
+    host: "{{ ansible_default_ipv4.address | default(ansible_host) }}"
+    delay: 10
+    timeout: 120
+    state: started
+
+- name: Wait for RabbitMQ Management to start
+  ansible.builtin.wait_for:
+    port: "{{ rabbitmq_management_port }}"
+    host: "{{ ansible_default_ipv4.address | default(ansible_host) }}"
+    delay: 5
+    timeout: 60
+    state: started
+
+- name: Verify RabbitMQ is running
+  ansible.builtin.command: rabbitmqctl status
+  register: rabbitmq_status
+  changed_when: false
+  retries: 5
+  delay: 10
+  until: rabbitmq_status.rc == 0
+
+- name: Display RabbitMQ status
+  ansible.builtin.debug:
+    msg: "RabbitMQ is running on {{ inventory_hostname }}"

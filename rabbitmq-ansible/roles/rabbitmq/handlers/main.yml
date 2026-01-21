@@ -1,0 +1,32 @@
+---
+# =============================================================================
+# RabbitMQ Handlers
+# =============================================================================
+
+- name: Restart RabbitMQ
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: restarted
+  throttle: 1
+  listen: "Restart RabbitMQ"
+
+- name: Reload RabbitMQ
+  ansible.builtin.command: rabbitmqctl eval 'application:stop(rabbit), application:start(rabbit).'
+  listen: "Reload RabbitMQ"
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  listen: "Reload systemd"
+
+- name: Start RabbitMQ
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: started
+  listen: "Start RabbitMQ"
+
+- name: Stop RabbitMQ
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: stopped
+  listen: "Stop RabbitMQ"

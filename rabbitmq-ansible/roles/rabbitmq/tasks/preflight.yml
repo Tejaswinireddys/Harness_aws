@@ -1,0 +1,68 @@
+---
+# =============================================================================
+# Pre-flight Checks
+# =============================================================================
+
+- name: Verify RHEL 8
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution in ['RedHat', 'CentOS', 'Rocky', 'AlmaLinux']
+      - ansible_distribution_major_version == "8"
+    fail_msg: "This playbook requires RHEL/CentOS/Rocky/AlmaLinux 8. Found: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+    success_msg: "OS verification passed: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+- name: Check minimum memory requirements
+  ansible.builtin.assert:
+    that:
+      - ansible_memtotal_mb >= 3800
+    fail_msg: "Minimum 4GB RAM required. Found: {{ ansible_memtotal_mb }}MB"
+    success_msg: "Memory check passed: {{ ansible_memtotal_mb }}MB available"
+
+- name: Check minimum disk space on /var/lib
+  ansible.builtin.shell: df -BG /var/lib | tail -1 | awk '{print $4}' | tr -d 'G'
+  register: disk_free
+  changed_when: false
+
+- name: Verify disk space requirements
+  ansible.builtin.assert:
+    that:
+      - disk_free.stdout | int >= 40
+    fail_msg: "Minimum 40GB free disk space required on /var/lib. Found: {{ disk_free.stdout }}GB"
+    success_msg: "Disk space check passed: {{ disk_free.stdout }}GB available"
+
+- name: Check hostname resolution for all cluster nodes
+  ansible.builtin.command: "getent hosts {{ item }}"
+  loop: "{{ groups['rabbitmq_cluster'] }}"
+  register: dns_check
+  changed_when: false
+  failed_when: dns_check.rc != 0
+
+- name: Verify hostname is set correctly
+  ansible.builtin.assert:
+    that:
+      - ansible_hostname == inventory_hostname or ansible_fqdn == inventory_hostname
+    fail_msg: "Hostname mismatch. Expected: {{ inventory_hostname }}, Found: {{ ansible_hostname }}"
+    success_msg: "Hostname verification passed: {{ ansible_hostname }}"
+
+- name: Check if firewalld is running
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+  register: firewalld_status
+  ignore_errors: yes
+
+- name: Display firewall status
+  ansible.builtin.debug:
+    msg: "Firewalld is {{ 'running' if firewalld_status.status.ActiveState == 'active' else 'not running' }}"
+  when: firewalld_status is defined
+
+- name: Verify time synchronization is enabled
+  ansible.builtin.command: timedatectl show --property=NTPSynchronized --value
+  register: ntp_status
+  changed_when: false
+  failed_when: false
+
+- name: Warn if NTP is not synchronized
+  ansible.builtin.debug:
+    msg: "WARNING: NTP is not synchronized. This may cause cluster issues."
+  when: ntp_status.stdout != "yes"
