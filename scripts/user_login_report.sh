@@ -284,12 +284,12 @@ generate_current_year_report() {
             ((year_count++))
 
             # This month
-            if [[ "$login_date" >= "$month_start" ]]; then
+            if [[ "$login_date" > "$month_start" || "$login_date" == "$month_start" ]]; then
                 ((month_count++))
             fi
 
             # This week
-            if [[ "$login_date" >= "$week_start" ]]; then
+            if [[ "$login_date" > "$week_start" || "$login_date" == "$week_start" ]]; then
                 ((week_count++))
             fi
 
@@ -317,8 +317,8 @@ generate_current_year_report() {
         [[ "$login_year" != "$current_year" ]] && continue
 
         ((total_year++))
-        [[ "$login_date" >= "$month_start" ]] && ((total_month++))
-        [[ "$login_date" >= "$week_start" ]] && ((total_week++))
+        [[ "$login_date" > "$month_start" || "$login_date" == "$month_start" ]] && ((total_month++))
+        [[ "$login_date" > "$week_start" || "$login_date" == "$week_start" ]] && ((total_week++))
         [[ "$login_date" == "$today" ]] && ((total_today++))
     done < "$events_file"
 
