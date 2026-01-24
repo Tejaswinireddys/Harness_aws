@@ -45,37 +45,72 @@ extract_login_events() {
 
     log_info "Extracting login events for year $target_year..."
 
-    # Collect all audit log files
+    # Calculate date range for target year
+    local year_start="${target_year}0101"
+    local year_end="${target_year}1231"
+
+    # Collect only audit log files modified in target year
     local audit_files=()
+    local total_files=0
+    local skipped_files=0
 
-    if [[ -f "$AUDIT_LOG_DIR/audit.log" ]]; then
-        audit_files+=("$AUDIT_LOG_DIR/audit.log")
-    fi
+    for f in "$AUDIT_LOG_DIR"/audit.log "$AUDIT_LOG_DIR"/audit.log.[0-9]*; do
+        [[ -f "$f" ]] || continue
+        ((total_files++))
 
-    # Add rotated logs
-    for f in "$AUDIT_LOG_DIR"/audit.log.[0-9]*; do
-        [[ -f "$f" ]] && audit_files+=("$f")
-    done
+        # Get file modification date as YYYYMMDD
+        local file_date=$(date -r "$f" '+%Y%m%d' 2>/dev/null)
+        if [[ -z "$file_date" ]]; then
+            # Fallback: use stat
+            file_date=$(stat -c '%Y' "$f" 2>/dev/null | xargs -I{} date -d @{} '+%Y%m%d' 2>/dev/null)
+        fi
 
-    # Add compressed logs (decompress to temp)
-    for f in "$AUDIT_LOG_DIR"/audit.log.*.gz; do
-        if [[ -f "$f" ]]; then
-            local temp_file="$TEMP_DIR/$(basename "$f" .gz)"
-            zcat "$f" > "$temp_file" 2>/dev/null && audit_files+=("$temp_file")
+        # Check if file is from target year (with some buffer for year boundaries)
+        local file_year="${file_date:0:4}"
+        if [[ "$file_year" == "$target_year" ]] || \
+           [[ "$file_year" == "$((target_year - 1))" && "${file_date:4:4}" -ge "1201" ]] || \
+           [[ "$file_year" == "$((target_year + 1))" && "${file_date:4:4}" -le "0131" ]]; then
+            audit_files+=("$f")
+        else
+            ((skipped_files++))
         fi
     done
 
+    # Handle compressed logs
+    for f in "$AUDIT_LOG_DIR"/audit.log.*.gz; do
+        [[ -f "$f" ]] || continue
+        ((total_files++))
+
+        local file_date=$(date -r "$f" '+%Y%m%d' 2>/dev/null)
+        local file_year="${file_date:0:4}"
+
+        if [[ "$file_year" == "$target_year" ]] || \
+           [[ "$file_year" == "$((target_year - 1))" && "${file_date:4:4}" -ge "1201" ]] || \
+           [[ "$file_year" == "$((target_year + 1))" && "${file_date:4:4}" -le "0131" ]]; then
+            local temp_file="$TEMP_DIR/$(basename "$f" .gz)"
+            zcat "$f" > "$temp_file" 2>/dev/null && audit_files+=("$temp_file")
+        else
+            ((skipped_files++))
+        fi
+    done
+
+    log_info "Total files: $total_files, Processing: ${#audit_files[@]}, Skipped: $skipped_files"
+
     if [[ ${#audit_files[@]} -eq 0 ]]; then
-        log_error "No audit log files found in $AUDIT_LOG_DIR"
+        log_warn "No audit log files found for year $target_year"
         touch "$output_file"
         return
     fi
 
-    log_info "Found ${#audit_files[@]} audit log file(s)"
+    # Parse login events using multiple event types
+    # USER_LOGIN: actual login
+    # USER_AUTH: authentication (includes SSH)
+    # USER_START: session start
+    # CRED_ACQ: credential acquisition
+    log_info "Parsing login events..."
 
-    # Parse login events - look for USER_LOGIN, USER_AUTH, USER_START with success
     cat "${audit_files[@]}" 2>/dev/null | \
-    grep -E 'type=(USER_LOGIN|USER_AUTH|USER_START)' | \
+    grep -E 'type=(USER_LOGIN|USER_AUTH|CRED_ACQ)' | \
     grep -i 'res=success' | \
     while read -r line; do
         # Extract epoch from msg=audit(EPOCH.xxx:xxx)
@@ -91,7 +126,7 @@ extract_login_events() {
 
         # Skip system accounts
         case "$username" in
-            nobody|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|sshd|systemd|messagebus|polkitd|chrony|dbus|rpc|rpcuser|nfsnobody|ec2-instance-connect|ssm-user|postfix)
+            nobody|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|sshd|systemd|messagebus|polkitd|chrony|dbus|rpc|rpcuser|nfsnobody|ec2-instance-connect|ssm-user|postfix|root)
                 continue ;;
         esac
 
@@ -107,7 +142,7 @@ extract_login_events() {
     done | sort -u > "$output_file"
 
     local count=$(wc -l < "$output_file" | tr -d ' ')
-    log_info "Found $count login events for year $target_year"
+    log_info "Found $count unique login events for year $target_year"
 }
 
 # -----------------------------------------------------------------------------
