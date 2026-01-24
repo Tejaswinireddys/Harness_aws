@@ -95,63 +95,122 @@ validate_year() {
 # Audit Log Parsing Functions
 # -----------------------------------------------------------------------------
 
-# Extract all login events from audit logs into a normalized format
+# Check if an audit log file contains events for the target year
+# Returns 0 if file has relevant data, 1 otherwise
+file_has_year_data() {
+    local file="$1"
+    local year_start_epoch="$2"
+    local year_end_epoch="$3"
+
+    # Get first and last epoch from the file using portable sed/awk
+    local first_epoch last_epoch
+
+    # Get first timestamp in file (portable approach)
+    first_epoch=$(head -100 "$file" 2>/dev/null | \
+        sed -n 's/.*msg=audit(\([0-9]*\).*/\1/p' | head -1)
+
+    # Get last timestamp in file
+    last_epoch=$(tail -100 "$file" 2>/dev/null | \
+        sed -n 's/.*msg=audit(\([0-9]*\).*/\1/p' | tail -1)
+
+    # If we can't determine timestamps, include the file to be safe
+    if [[ -z "$first_epoch" ]] || [[ -z "$last_epoch" ]]; then
+        return 0
+    fi
+
+    # Check if file's time range overlaps with target year
+    # File overlaps if: file_start <= year_end AND file_end >= year_start
+    if [[ "$first_epoch" -le "$year_end_epoch" ]] && [[ "$last_epoch" -ge "$year_start_epoch" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Extract login events from audit logs for a specific year
 # Output: EPOCH_TIMESTAMP|USERNAME|DATE_YYYY-MM-DD
 extract_login_events() {
     local output_file="$1"
+    local target_year="$2"
 
-    log_info "Extracting login events from audit logs..."
+    log_info "Extracting login events for year $target_year from audit logs..."
 
-    # Process all audit log files (current and rotated)
-    # Look for USER_LOGIN events with res=success
-    local audit_files=()
+    # Calculate epoch range for target year
+    local year_start_epoch year_end_epoch
+    year_start_epoch=$(date -d "$target_year-01-01 00:00:00" '+%s' 2>/dev/null)
+    year_end_epoch=$(date -d "$target_year-12-31 23:59:59" '+%s' 2>/dev/null)
 
-    # Add main audit.log if exists
-    if [[ -f "$AUDIT_LOG_DIR/audit.log" ]]; then
-        audit_files+=("$AUDIT_LOG_DIR/audit.log")
+    if [[ -z "$year_start_epoch" ]] || [[ -z "$year_end_epoch" ]]; then
+        log_error "Failed to calculate epoch range for year $target_year"
+        touch "$output_file"
+        return
     fi
 
-    # Add rotated logs (audit.log.1, audit.log.2, etc.)
+    log_info "Target year epoch range: $year_start_epoch - $year_end_epoch"
+
+    # Collect audit log files that contain data for target year
+    local audit_files=()
+    local skipped_files=0
+
+    # Check main audit.log
+    if [[ -f "$AUDIT_LOG_DIR/audit.log" ]]; then
+        if file_has_year_data "$AUDIT_LOG_DIR/audit.log" "$year_start_epoch" "$year_end_epoch"; then
+            audit_files+=("$AUDIT_LOG_DIR/audit.log")
+        else
+            ((skipped_files++))
+        fi
+    fi
+
+    # Check rotated logs (audit.log.1, audit.log.2, etc.)
     for rotated in "$AUDIT_LOG_DIR"/audit.log.[0-9]*; do
         if [[ -f "$rotated" ]]; then
-            audit_files+=("$rotated")
+            if file_has_year_data "$rotated" "$year_start_epoch" "$year_end_epoch"; then
+                audit_files+=("$rotated")
+            else
+                ((skipped_files++))
+            fi
         fi
     done
 
-    # Add compressed rotated logs if any
+    # Check compressed rotated logs
     for compressed in "$AUDIT_LOG_DIR"/audit.log.*.gz; do
         if [[ -f "$compressed" ]]; then
-            # Decompress to temp and add
+            # Decompress to temp file
             local temp_file="$TEMP_DIR/$(basename "$compressed" .gz)"
-            zcat "$compressed" > "$temp_file" 2>/dev/null || true
+            zcat "$compressed" > "$temp_file" 2>/dev/null || continue
+
             if [[ -s "$temp_file" ]]; then
-                audit_files+=("$temp_file")
+                if file_has_year_data "$temp_file" "$year_start_epoch" "$year_end_epoch"; then
+                    audit_files+=("$temp_file")
+                else
+                    rm -f "$temp_file"
+                    ((skipped_files++))
+                fi
             fi
         fi
     done
 
     if [[ ${#audit_files[@]} -eq 0 ]]; then
-        log_warn "No audit log files found in $AUDIT_LOG_DIR"
+        log_warn "No audit log files found containing data for year $target_year"
+        [[ $skipped_files -gt 0 ]] && log_info "Skipped $skipped_files file(s) outside target year range"
         touch "$output_file"
         return
     fi
 
-    log_info "Processing ${#audit_files[@]} audit log file(s)..."
+    log_info "Processing ${#audit_files[@]} audit log file(s) for year $target_year"
+    [[ $skipped_files -gt 0 ]] && log_info "Skipped $skipped_files file(s) outside target year range"
 
-    # Parse audit logs for successful USER_LOGIN events
-    # Audit log format: type=USER_LOGIN msg=audit(EPOCH.xxx:xxx): ... acct="username" ... res=success
-    # Also check for USER_START events as backup indicators
+    # Parse audit logs for successful USER_LOGIN events within target year
     cat "${audit_files[@]}" 2>/dev/null | \
     grep -E 'type=(USER_LOGIN|USER_START)' | \
     grep -i 'res=success' | \
-    awk '
+    awk -v year_start="$year_start_epoch" -v year_end="$year_end_epoch" '
     {
         line = $0
         epoch = ""
         username = ""
 
         # Extract timestamp from msg=audit(EPOCH.xxx:xxx) or msg=audit(EPOCH:xxx)
-        # Using gsub/split for POSIX compatibility
         if (match(line, /msg=audit\([0-9]+/)) {
             temp = substr(line, RSTART + 10)
             split(temp, ts_parts, /[.:]/)
@@ -159,6 +218,9 @@ extract_login_events() {
         }
 
         if (epoch == "") next
+
+        # Filter by target year epoch range
+        if (epoch < year_start || epoch > year_end) next
 
         # Extract username from acct="username"
         if (match(line, /acct="[^"]+"/)) {
@@ -180,9 +242,6 @@ extract_login_events() {
             next
         }
 
-        # Skip root for cleaner reports (optional - comment out to include root)
-        # if (username == "root") next
-
         print epoch "|" username
     }
     ' | sort -u > "$TEMP_DIR/raw_events.txt"
@@ -190,7 +249,6 @@ extract_login_events() {
     # Convert epoch to date format
     while IFS='|' read -r epoch username; do
         if [[ -n "$epoch" ]] && [[ -n "$username" ]]; then
-            # Convert epoch to YYYY-MM-DD format
             login_date=$(date -d "@$epoch" '+%Y-%m-%d' 2>/dev/null) || continue
             echo "$epoch|$username|$login_date"
         fi
@@ -198,7 +256,7 @@ extract_login_events() {
 
     local event_count
     event_count=$(wc -l < "$output_file" | tr -d ' ')
-    log_info "Found $event_count login events."
+    log_info "Found $event_count login events for year $target_year"
 }
 
 # -----------------------------------------------------------------------------
@@ -276,11 +334,7 @@ generate_current_year_report() {
         while IFS='|' read -r epoch user login_date; do
             [[ "$user" != "$username" ]] && continue
 
-            # Extract year from login_date
-            local login_year="${login_date:0:4}"
-            [[ "$login_year" != "$current_year" ]] && continue
-
-            # This year
+            # This year (all events are already filtered for current year)
             ((year_count++))
 
             # This month
@@ -299,7 +353,7 @@ generate_current_year_report() {
             fi
         done < "$events_file"
 
-        # Only print users with at least one login this year
+        # Only print users with at least one login
         if [[ $year_count -gt 0 ]]; then
             printf "%-20s %12d %15d %15d %15d\n" \
                 "$username" "$today_count" "$week_count" "$month_count" "$year_count"
@@ -308,14 +362,11 @@ generate_current_year_report() {
 
     # Calculate and print totals
     local total_today=0 total_week=0 total_month=0 total_year=0
-    local current_year
-    current_year=$(date '+%Y')
 
     while IFS='|' read -r epoch user login_date; do
         [[ -z "$login_date" ]] && continue
-        local login_year="${login_date:0:4}"
-        [[ "$login_year" != "$current_year" ]] && continue
 
+        # All events are already filtered for current year
         ((total_year++))
         [[ "$login_date" > "$month_start" || "$login_date" == "$month_start" ]] && ((total_month++))
         [[ "$login_date" > "$week_start" || "$login_date" == "$week_start" ]] && ((total_week++))
@@ -336,24 +387,21 @@ generate_year_report() {
 
     log_info "Generating month-wise report for year $target_year..."
 
-    # Filter events for target year and count by user and month
+    # Count events by user and month (data already filtered for target year)
     local monthly_stats="$TEMP_DIR/monthly_stats.txt"
 
-    awk -F'|' -v year="$target_year" '
+    awk -F'|' '
     {
         login_date = $3
         username = $2
 
-        # Extract year and month
+        # Extract month from date
         split(login_date, date_parts, "-")
-        login_year = date_parts[1]
         login_month = date_parts[2]
 
-        if (login_year == year) {
-            key = username "|" login_month
-            count[key]++
-            users[username] = 1
-        }
+        key = username "|" login_month
+        count[key]++
+        users[username] = 1
     }
     END {
         for (user in users) {
@@ -542,9 +590,17 @@ main() {
     echo -e "Host: $(hostname)"
     echo ""
 
-    # Extract login events
+    # Determine the year to process
+    local process_year
+    if [[ -z "$target_year" ]]; then
+        process_year=$(date '+%Y')
+    else
+        process_year="$target_year"
+    fi
+
+    # Extract login events for the target year only
     local events_file="$TEMP_DIR/login_events.txt"
-    extract_login_events "$events_file"
+    extract_login_events "$events_file" "$process_year"
 
     # Generate appropriate report
     if [[ -z "$target_year" ]]; then
