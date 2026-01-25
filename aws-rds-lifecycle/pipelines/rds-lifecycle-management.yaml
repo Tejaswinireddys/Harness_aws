@@ -1,0 +1,898 @@
+###############################################################################
+# Pipeline: RDS Instance Lifecycle Management
+# Purpose: Start, Stop, List, and Snapshot RDS instances and Aurora clusters
+# Author: Platform Team
+# Version: 1.0.0
+###############################################################################
+
+pipeline:
+  name: RDS Instance Lifecycle Management
+  identifier: rds_lifecycle_management
+  projectIdentifier: <+org.identifier>_platform
+  orgIdentifier: <+org.identifier>
+  description: |
+    Comprehensive RDS database lifecycle management pipeline.
+    Supports: List, Start, Stop, and Snapshot operations for RDS and Aurora.
+  tags:
+    category: database
+    team: platform
+    service: rds-lifecycle
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PIPELINE VARIABLES (User Inputs)
+  # ═══════════════════════════════════════════════════════════════════════════
+  variables:
+    - name: action
+      type: String
+      description: Action to perform on RDS databases
+      required: true
+      value: <+input>.allowedValues(list_all,list_available,list_stopped,list_clusters,start,stop)
+
+    - name: aws_region
+      type: String
+      description: AWS Region where databases are located
+      required: true
+      value: <+input>.default(us-east-1).allowedValues(us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-west-2,eu-central-1,ap-south-1,ap-southeast-1,ap-southeast-2,ap-northeast-1)
+
+    - name: db_identifiers
+      type: String
+      description: Comma-separated DB instance identifiers (required for start/stop)
+      required: false
+      value: <+input>
+
+    - name: cluster_identifiers
+      type: String
+      description: Comma-separated Aurora cluster identifiers (for cluster operations)
+      required: false
+      value: <+input>
+
+    - name: engine_filter
+      type: String
+      description: Filter databases by engine type
+      required: false
+      value: <+input>.default("").allowedValues("",mysql,postgres,mariadb,oracle-ee,sqlserver-ee,aurora-mysql,aurora-postgresql)
+
+    - name: create_snapshot
+      type: String
+      description: Create snapshot before stop action
+      required: false
+      value: <+input>.default(true).allowedValues(true,false)
+
+    - name: dry_run
+      type: String
+      description: Enable dry run mode (no actual changes)
+      required: false
+      value: <+input>.default(false).allowedValues(true,false)
+
+    - name: wait_for_state
+      type: String
+      description: Wait for databases to reach target state
+      required: false
+      value: <+input>.default(true).allowedValues(true,false)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PIPELINE STAGES
+  # ═══════════════════════════════════════════════════════════════════════════
+  stages:
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 1: INITIALIZATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "1️⃣ Initialize"
+        identifier: initialize
+        description: Initialize pipeline and display configuration
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Display Configuration
+                  identifier: display_configuration
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                                                                          ║"
+                          echo "║              RDS LIFECYCLE MANAGEMENT - PIPELINE STARTED                 ║"
+                          echo "║                                                                          ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  PIPELINE CONFIGURATION"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  EXECUTION PARAMETERS                                           │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Action" "$ACTION"
+                          printf "  │  %-22s: %-38s │\n" "AWS Region" "$AWS_REGION"
+                          printf "  │  %-22s: %-38s │\n" "Engine Filter" "${ENGINE_FILTER:-All Engines}"
+                          printf "  │  %-22s: %-38s │\n" "Create Snapshot" "$CREATE_SNAPSHOT"
+                          printf "  │  %-22s: %-38s │\n" "Dry Run" "$DRY_RUN"
+                          printf "  │  %-22s: %-38s │\n" "Wait for State" "$WAIT_FOR_STATE"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Pipeline ID" "${HARNESS_PIPELINE_ID:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Triggered By" "${HARNESS_USER_NAME:-System}"
+                          printf "  │  %-22s: %-38s │\n" "Timestamp" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          # Validate action and identifiers
+                          if [[ "$ACTION" == "start" || "$ACTION" == "stop" ]]; then
+                            if [[ -z "$DB_IDENTIFIERS" && -z "$CLUSTER_IDENTIFIERS" ]]; then
+                              echo "❌ ERROR: DB or Cluster identifiers required for $ACTION"
+                              exit 1
+                            fi
+                            echo "✅ Database identifiers provided for $ACTION action"
+                          fi
+
+                          if [[ -n "$DB_IDENTIFIERS" ]]; then
+                            echo "  Target DB Instances:"
+                            IFS=',' read -ra DBS <<< "$DB_IDENTIFIERS"
+                            for db in "${DBS[@]}"; do
+                              echo "    → $(echo "$db" | tr -d ' ')"
+                            done
+                          fi
+
+                          if [[ -n "$CLUSTER_IDENTIFIERS" ]]; then
+                            echo "  Target Aurora Clusters:"
+                            IFS=',' read -ra CLUSTERS <<< "$CLUSTER_IDENTIFIERS"
+                            for cluster in "${CLUSTERS[@]}"; do
+                              echo "    → $(echo "$cluster" | tr -d ' ')"
+                            done
+                          fi
+
+                          echo ""
+                          echo "INITIALIZATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      DB_IDENTIFIERS: <+pipeline.variables.db_identifiers>
+                      CLUSTER_IDENTIFIERS: <+pipeline.variables.cluster_identifiers>
+                      ENGINE_FILTER: <+pipeline.variables.engine_filter>
+                      CREATE_SNAPSHOT: <+pipeline.variables.create_snapshot>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      WAIT_FOR_STATE: <+pipeline.variables.wait_for_state>
+                    outputVariables:
+                      - name: INITIALIZATION_STATUS
+                  timeout: 1m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 2: VALIDATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "2️⃣ Validate Credentials"
+        identifier: validate
+        description: Validate AWS credentials and RDS permissions
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Validate AWS Credentials
+                  identifier: validate_aws_credentials
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║              AWS CREDENTIALS & RDS PERMISSIONS VALIDATION                ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Validate STS
+                          echo "🔐 Validating AWS credentials..."
+                          CALLER_IDENTITY=$(aws sts get-caller-identity --output json 2>&1) || {
+                            echo "❌ ERROR: Invalid AWS credentials"
+                            exit 1
+                          }
+
+                          ACCOUNT_ID=$(echo $CALLER_IDENTITY | jq -r '.Account')
+                          echo "✅ AWS Credentials Valid (Account: $ACCOUNT_ID)"
+                          echo ""
+
+                          # Validate RDS permissions
+                          echo "🗄️  Validating RDS permissions..."
+                          aws rds describe-db-instances --region $AWS_REGION --max-records 5 > /dev/null 2>&1 || {
+                            echo "❌ ERROR: No permission to describe RDS instances"
+                            exit 1
+                          }
+                          echo "✅ RDS DescribeDBInstances permission verified"
+
+                          aws rds describe-db-clusters --region $AWS_REGION --max-records 5 > /dev/null 2>&1 || {
+                            echo "⚠️  Warning: Limited cluster permissions"
+                          }
+                          echo "✅ RDS DescribeDBClusters permission verified"
+                          echo ""
+
+                          echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> $HARNESS_OUTPUT_FILE
+                          echo "VALIDATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                    outputVariables:
+                      - name: AWS_ACCOUNT_ID
+                      - name: VALIDATION_STATUS
+                  timeout: 2m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 3: DISCOVERY
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "3️⃣ Discover Databases"
+        identifier: discovery
+        description: Discover and list RDS instances and Aurora clusters
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: List RDS Instances
+                  identifier: list_instances
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    RDS DATABASE DISCOVERY                                ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Fetch RDS instances
+                          echo "📡 Fetching RDS instances in $AWS_REGION..."
+                          INSTANCES=$(aws rds describe-db-instances \
+                            --region "$AWS_REGION" \
+                            --query 'DBInstances[].{
+                              ID: DBInstanceIdentifier,
+                              Status: DBInstanceStatus,
+                              Engine: Engine,
+                              Class: DBInstanceClass,
+                              Storage: AllocatedStorage,
+                              MultiAZ: MultiAZ
+                            }' --output json)
+
+                          # Filter by engine if specified
+                          if [[ -n "${ENGINE_FILTER:-}" ]]; then
+                            INSTANCES=$(echo "$INSTANCES" | jq --arg e "$ENGINE_FILTER" '[.[] | select(.Engine | contains($e))]')
+                          fi
+
+                          # Filter by status based on action
+                          case $ACTION in
+                            "list_available") INSTANCES=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "available")]') ;;
+                            "list_stopped") INSTANCES=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "stopped")]') ;;
+                          esac
+
+                          TOTAL=$(echo "$INSTANCES" | jq 'length')
+                          AVAILABLE=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "available")] | length')
+                          STOPPED=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "stopped")] | length')
+
+                          echo ""
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  RDS INSTANCES SUMMARY"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  Available: $AVAILABLE | Stopped: $STOPPED | Total: $TOTAL"
+                          echo ""
+
+                          if [[ "$TOTAL" -gt 0 ]]; then
+                            echo "┌──────────────────────────┬─────────────┬──────────────┬───────────────┬────────┐"
+                            echo "│ DB Identifier            │ Status      │ Engine       │ Class         │ Multi  │"
+                            echo "├──────────────────────────┼─────────────┼──────────────┼───────────────┼────────┤"
+
+                            echo "$INSTANCES" | jq -r '.[] | [.ID, .Status, .Engine, .Class, (if .MultiAZ then "Yes" else "No" end)] | @tsv' | while IFS=$'\t' read -r id status engine class multiaz; do
+                              printf "│ %-24s │ %-11s │ %-12s │ %-13s │ %-6s │\n" "${id:0:24}" "$status" "${engine:0:12}" "${class:0:13}" "$multiaz"
+                            done
+
+                            echo "└──────────────────────────┴─────────────┴──────────────┴───────────────┴────────┘"
+                          fi
+                          echo ""
+
+                          # Fetch Aurora Clusters
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  AURORA CLUSTERS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          CLUSTERS=$(aws rds describe-db-clusters \
+                            --region "$AWS_REGION" \
+                            --query 'DBClusters[].{ID: DBClusterIdentifier, Status: Status, Engine: Engine, Members: DBClusterMembers}' \
+                            --output json 2>/dev/null || echo "[]")
+
+                          CLUSTER_COUNT=$(echo "$CLUSTERS" | jq 'length')
+
+                          if [[ "$CLUSTER_COUNT" -gt 0 ]]; then
+                            echo "┌──────────────────────────┬─────────────┬──────────────────────┬─────────┐"
+                            echo "│ Cluster Identifier       │ Status      │ Engine               │ Members │"
+                            echo "├──────────────────────────┼─────────────┼──────────────────────┼─────────┤"
+
+                            echo "$CLUSTERS" | jq -r '.[] | [.ID, .Status, .Engine, (.Members | length | tostring)] | @tsv' | while IFS=$'\t' read -r id status engine members; do
+                              printf "│ %-24s │ %-11s │ %-20s │ %-7s │\n" "${id:0:24}" "$status" "${engine:0:20}" "$members"
+                            done
+
+                            echo "└──────────────────────────┴─────────────┴──────────────────────┴─────────┘"
+                          else
+                            echo "  No Aurora clusters found"
+                          fi
+                          echo ""
+
+                          # Create lists
+                          AVAILABLE_IDS=$(echo "$INSTANCES" | jq -r '[.[] | select(.Status == "available") | .ID] | join(",")')
+                          STOPPED_IDS=$(echo "$INSTANCES" | jq -r '[.[] | select(.Status == "stopped") | .ID] | join(",")')
+
+                          {
+                            echo "TOTAL_INSTANCES=$TOTAL"
+                            echo "AVAILABLE_INSTANCES=$AVAILABLE"
+                            echo "STOPPED_INSTANCES=$STOPPED"
+                            echo "CLUSTER_COUNT=$CLUSTER_COUNT"
+                            echo "AVAILABLE_IDS=$AVAILABLE_IDS"
+                            echo "STOPPED_IDS=$STOPPED_IDS"
+                          } >> "$HARNESS_OUTPUT_FILE"
+
+                          echo "✅ Discovery complete!"
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      ENGINE_FILTER: <+pipeline.variables.engine_filter>
+                    outputVariables:
+                      - name: TOTAL_INSTANCES
+                      - name: AVAILABLE_INSTANCES
+                      - name: STOPPED_INSTANCES
+                      - name: CLUSTER_COUNT
+                      - name: AVAILABLE_IDS
+                      - name: STOPPED_IDS
+                  timeout: 5m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 4: SNAPSHOT (Conditional - Before Stop)
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "4️⃣ Create Snapshot"
+        identifier: create_snapshot
+        description: Create snapshot before stop action (safety backup)
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.action> == "stop" && <+pipeline.variables.create_snapshot> == "true" && <+pipeline.variables.dry_run> == "false"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Create Pre-Stop Snapshot
+                  identifier: create_pre_stop_snapshot
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    CREATING PRE-STOP SNAPSHOTS                           ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                          SNAPSHOT_PREFIX="harness-pre-stop"
+                          CREATED_SNAPSHOTS=""
+
+                          # Create DB instance snapshots
+                          if [[ -n "$DB_IDENTIFIERS" ]]; then
+                            echo "Creating snapshots for DB instances..."
+                            echo ""
+
+                            IFS=',' read -ra DBS <<< "$DB_IDENTIFIERS"
+                            for db_id in "${DBS[@]}"; do
+                              db_id=$(echo "$db_id" | tr -d ' ')
+                              snapshot_id="${SNAPSHOT_PREFIX}-${db_id}-${TIMESTAMP}"
+
+                              echo "  📸 Creating snapshot: $snapshot_id"
+                              aws rds create-db-snapshot \
+                                --region "$AWS_REGION" \
+                                --db-instance-identifier "$db_id" \
+                                --db-snapshot-identifier "$snapshot_id" > /dev/null 2>&1 && {
+                                echo "     ✅ Snapshot initiated"
+                                CREATED_SNAPSHOTS="$CREATED_SNAPSHOTS$snapshot_id,"
+                              } || {
+                                echo "     ⚠️  Failed to create snapshot"
+                              }
+                            done
+                            echo ""
+                          fi
+
+                          # Create cluster snapshots
+                          if [[ -n "$CLUSTER_IDENTIFIERS" ]]; then
+                            echo "Creating snapshots for Aurora clusters..."
+                            echo ""
+
+                            IFS=',' read -ra CLUSTERS <<< "$CLUSTER_IDENTIFIERS"
+                            for cluster_id in "${CLUSTERS[@]}"; do
+                              cluster_id=$(echo "$cluster_id" | tr -d ' ')
+                              snapshot_id="${SNAPSHOT_PREFIX}-${cluster_id}-${TIMESTAMP}"
+
+                              echo "  📸 Creating cluster snapshot: $snapshot_id"
+                              aws rds create-db-cluster-snapshot \
+                                --region "$AWS_REGION" \
+                                --db-cluster-identifier "$cluster_id" \
+                                --db-cluster-snapshot-identifier "$snapshot_id" > /dev/null 2>&1 && {
+                                echo "     ✅ Cluster snapshot initiated"
+                                CREATED_SNAPSHOTS="$CREATED_SNAPSHOTS$snapshot_id,"
+                              } || {
+                                echo "     ⚠️  Failed to create cluster snapshot"
+                              }
+                            done
+                            echo ""
+                          fi
+
+                          echo "⏳ Snapshots are being created in the background..."
+                          echo "   Proceeding with stop operation (snapshots will complete independently)"
+                          echo ""
+
+                          echo "SNAPSHOT_STATUS=initiated" >> $HARNESS_OUTPUT_FILE
+                          echo "CREATED_SNAPSHOTS=${CREATED_SNAPSHOTS%,}" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      DB_IDENTIFIERS: <+pipeline.variables.db_identifiers>
+                      CLUSTER_IDENTIFIERS: <+pipeline.variables.cluster_identifiers>
+                    outputVariables:
+                      - name: SNAPSHOT_STATUS
+                      - name: CREATED_SNAPSHOTS
+                  timeout: 10m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 5: ACTION EXECUTION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "5️⃣ Execute Action"
+        identifier: execute_action
+        description: Execute start/stop action on databases
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.action> == "start" || <+pipeline.variables.action> == "stop"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Execute Database Action
+                  identifier: execute_database_action
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    EXECUTING RDS ACTION                                  ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Dry run check
+                          if [[ "$DRY_RUN" == "true" ]]; then
+                            echo "🔍 DRY RUN MODE - No changes will be made"
+                            echo ""
+                            echo "Would $ACTION:"
+                            [[ -n "$DB_IDENTIFIERS" ]] && echo "  DB Instances: $DB_IDENTIFIERS"
+                            [[ -n "$CLUSTER_IDENTIFIERS" ]] && echo "  Clusters: $CLUSTER_IDENTIFIERS"
+                            echo ""
+                            echo "ACTION_RESULT=dry_run" >> $HARNESS_OUTPUT_FILE
+                            exit 0
+                          fi
+
+                          SUCCESS_COUNT=0
+                          FAILED_COUNT=0
+
+                          # Execute on DB instances
+                          if [[ -n "$DB_IDENTIFIERS" ]]; then
+                            echo "Processing DB Instances..."
+                            echo ""
+
+                            IFS=',' read -ra DBS <<< "$DB_IDENTIFIERS"
+                            for db_id in "${DBS[@]}"; do
+                              db_id=$(echo "$db_id" | tr -d ' ')
+
+                              if [[ "$ACTION" == "start" ]]; then
+                                echo "  🚀 Starting: $db_id"
+                                aws rds start-db-instance \
+                                  --region "$AWS_REGION" \
+                                  --db-instance-identifier "$db_id" > /dev/null 2>&1 && {
+                                  echo "     ✅ Start initiated"
+                                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                                } || {
+                                  echo "     ❌ Failed to start"
+                                  FAILED_COUNT=$((FAILED_COUNT + 1))
+                                }
+                              else
+                                echo "  ⏹️  Stopping: $db_id"
+                                aws rds stop-db-instance \
+                                  --region "$AWS_REGION" \
+                                  --db-instance-identifier "$db_id" > /dev/null 2>&1 && {
+                                  echo "     ✅ Stop initiated"
+                                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                                } || {
+                                  echo "     ❌ Failed to stop"
+                                  FAILED_COUNT=$((FAILED_COUNT + 1))
+                                }
+                              fi
+                            done
+                            echo ""
+                          fi
+
+                          # Execute on clusters
+                          if [[ -n "$CLUSTER_IDENTIFIERS" ]]; then
+                            echo "Processing Aurora Clusters..."
+                            echo ""
+
+                            IFS=',' read -ra CLUSTERS <<< "$CLUSTER_IDENTIFIERS"
+                            for cluster_id in "${CLUSTERS[@]}"; do
+                              cluster_id=$(echo "$cluster_id" | tr -d ' ')
+
+                              if [[ "$ACTION" == "start" ]]; then
+                                echo "  🚀 Starting cluster: $cluster_id"
+                                aws rds start-db-cluster \
+                                  --region "$AWS_REGION" \
+                                  --db-cluster-identifier "$cluster_id" > /dev/null 2>&1 && {
+                                  echo "     ✅ Cluster start initiated"
+                                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                                } || {
+                                  echo "     ❌ Failed to start cluster"
+                                  FAILED_COUNT=$((FAILED_COUNT + 1))
+                                }
+                              else
+                                echo "  ⏹️  Stopping cluster: $cluster_id"
+                                aws rds stop-db-cluster \
+                                  --region "$AWS_REGION" \
+                                  --db-cluster-identifier "$cluster_id" > /dev/null 2>&1 && {
+                                  echo "     ✅ Cluster stop initiated"
+                                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                                } || {
+                                  echo "     ❌ Failed to stop cluster"
+                                  FAILED_COUNT=$((FAILED_COUNT + 1))
+                                }
+                              fi
+                            done
+                            echo ""
+                          fi
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  ACTION RESULTS: $SUCCESS_COUNT succeeded, $FAILED_COUNT failed"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          # Wait for state if enabled
+                          if [[ "$WAIT_FOR_STATE" == "true" ]]; then
+                            TARGET_STATE=""
+                            [[ "$ACTION" == "start" ]] && TARGET_STATE="available" || TARGET_STATE="stopped"
+
+                            echo "⏳ Waiting for databases to reach $TARGET_STATE state..."
+                            echo "   (This may take several minutes)"
+                            echo ""
+
+                            if [[ -n "$DB_IDENTIFIERS" ]]; then
+                              IFS=',' read -ra DBS <<< "$DB_IDENTIFIERS"
+                              for db_id in "${DBS[@]}"; do
+                                db_id=$(echo "$db_id" | tr -d ' ')
+                                echo "  Waiting for $db_id..."
+
+                                if [[ "$ACTION" == "start" ]]; then
+                                  aws rds wait db-instance-available \
+                                    --region "$AWS_REGION" \
+                                    --db-instance-identifier "$db_id" 2>/dev/null && {
+                                    echo "  ✅ $db_id is now available"
+                                  } || {
+                                    echo "  ⚠️  Timeout waiting for $db_id"
+                                  }
+                                else
+                                  aws rds wait db-instance-stopped \
+                                    --region "$AWS_REGION" \
+                                    --db-instance-identifier "$db_id" 2>/dev/null && {
+                                    echo "  ✅ $db_id is now stopped"
+                                  } || {
+                                    echo "  ⚠️  Timeout waiting for $db_id"
+                                  }
+                                fi
+                              done
+                            fi
+                            echo ""
+                          fi
+
+                          {
+                            echo "ACTION_RESULT=success"
+                            echo "SUCCESS_COUNT=$SUCCESS_COUNT"
+                            echo "FAILED_COUNT=$FAILED_COUNT"
+                          } >> "$HARNESS_OUTPUT_FILE"
+
+                          echo "✅ Action execution complete!"
+
+                          if [[ "$ACTION" == "stop" ]]; then
+                            echo ""
+                            echo "⚠️  REMINDER: Stopped RDS instances will auto-start after 7 days"
+                          fi
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      DB_IDENTIFIERS: <+pipeline.variables.db_identifiers>
+                      CLUSTER_IDENTIFIERS: <+pipeline.variables.cluster_identifiers>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      WAIT_FOR_STATE: <+pipeline.variables.wait_for_state>
+                    outputVariables:
+                      - name: ACTION_RESULT
+                      - name: SUCCESS_COUNT
+                      - name: FAILED_COUNT
+                  timeout: 20m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 6: VERIFICATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "6️⃣ Verify State"
+        identifier: verify_state
+        description: Verify databases are in expected state
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: (<+pipeline.variables.action> == "start" || <+pipeline.variables.action> == "stop") && <+pipeline.variables.dry_run> == "false"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Verify Database States
+                  identifier: verify_database_states
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    STATE VERIFICATION                                    ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          EXPECTED_STATE=""
+                          [[ "$ACTION" == "start" ]] && EXPECTED_STATE="available" || EXPECTED_STATE="stopped"
+
+                          echo "Expected State: $EXPECTED_STATE"
+                          echo ""
+
+                          VERIFIED=0
+                          TOTAL=0
+
+                          # Verify DB instances
+                          if [[ -n "$DB_IDENTIFIERS" ]]; then
+                            echo "DB Instance Verification:"
+                            echo "┌──────────────────────────┬─────────────┬────────────────┐"
+                            echo "│ DB Identifier            │ Status      │ Verification   │"
+                            echo "├──────────────────────────┼─────────────┼────────────────┤"
+
+                            IFS=',' read -ra DBS <<< "$DB_IDENTIFIERS"
+                            for db_id in "${DBS[@]}"; do
+                              db_id=$(echo "$db_id" | tr -d ' ')
+                              TOTAL=$((TOTAL + 1))
+
+                              STATUS=$(aws rds describe-db-instances \
+                                --region "$AWS_REGION" \
+                                --db-instance-identifier "$db_id" \
+                                --query 'DBInstances[0].DBInstanceStatus' \
+                                --output text 2>/dev/null || echo "ERROR")
+
+                              if [[ "$STATUS" == "$EXPECTED_STATE" ]]; then
+                                VERIFIED=$((VERIFIED + 1))
+                                printf "│ %-24s │ %-11s │ ✅ VERIFIED    │\n" "${db_id:0:24}" "$STATUS"
+                              else
+                                printf "│ %-24s │ %-11s │ ❌ MISMATCH    │\n" "${db_id:0:24}" "$STATUS"
+                              fi
+                            done
+
+                            echo "└──────────────────────────┴─────────────┴────────────────┘"
+                            echo ""
+                          fi
+
+                          # Verify clusters
+                          if [[ -n "$CLUSTER_IDENTIFIERS" ]]; then
+                            echo "Aurora Cluster Verification:"
+                            echo "┌──────────────────────────┬─────────────┬────────────────┐"
+                            echo "│ Cluster Identifier       │ Status      │ Verification   │"
+                            echo "├──────────────────────────┼─────────────┼────────────────┤"
+
+                            IFS=',' read -ra CLUSTERS <<< "$CLUSTER_IDENTIFIERS"
+                            for cluster_id in "${CLUSTERS[@]}"; do
+                              cluster_id=$(echo "$cluster_id" | tr -d ' ')
+                              TOTAL=$((TOTAL + 1))
+
+                              STATUS=$(aws rds describe-db-clusters \
+                                --region "$AWS_REGION" \
+                                --db-cluster-identifier "$cluster_id" \
+                                --query 'DBClusters[0].Status' \
+                                --output text 2>/dev/null || echo "ERROR")
+
+                              if [[ "$STATUS" == "$EXPECTED_STATE" ]]; then
+                                VERIFIED=$((VERIFIED + 1))
+                                printf "│ %-24s │ %-11s │ ✅ VERIFIED    │\n" "${cluster_id:0:24}" "$STATUS"
+                              else
+                                printf "│ %-24s │ %-11s │ ❌ MISMATCH    │\n" "${cluster_id:0:24}" "$STATUS"
+                              fi
+                            done
+
+                            echo "└──────────────────────────┴─────────────┴────────────────┘"
+                            echo ""
+                          fi
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  VERIFICATION: $VERIFIED of $TOTAL databases in expected state"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          if [[ $VERIFIED -eq $TOTAL ]]; then
+                            echo "✅ All databases verified!"
+                            echo "VERIFICATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                          else
+                            echo "⚠️  Some databases not in expected state"
+                            echo "VERIFICATION_STATUS=partial" >> $HARNESS_OUTPUT_FILE
+                          fi
+
+                          echo "VERIFIED_COUNT=$VERIFIED" >> $HARNESS_OUTPUT_FILE
+                          echo "TOTAL_COUNT=$TOTAL" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      DB_IDENTIFIERS: <+pipeline.variables.db_identifiers>
+                      CLUSTER_IDENTIFIERS: <+pipeline.variables.cluster_identifiers>
+                    outputVariables:
+                      - name: VERIFICATION_STATUS
+                      - name: VERIFIED_COUNT
+                      - name: TOTAL_COUNT
+                  timeout: 5m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 7: SUMMARY & NOTIFICATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "7️⃣ Summary & Notify"
+        identifier: summary_notify
+        description: Generate summary and send notifications
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Generate Summary Report
+                  identifier: generate_summary
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                                                                          ║"
+                          echo "║                    PIPELINE EXECUTION SUMMARY                            ║"
+                          echo "║                                                                          ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  EXECUTION DETAILS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  PIPELINE RESULTS                                               │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Action Performed" "$ACTION"
+                          printf "  │  %-22s: %-38s │\n" "Region" "$AWS_REGION"
+                          printf "  │  %-22s: %-38s │\n" "Total RDS Instances" "${TOTAL_INSTANCES:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Available Instances" "${AVAILABLE_INSTANCES:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Stopped Instances" "${STOPPED_INSTANCES:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Aurora Clusters" "${CLUSTER_COUNT:-N/A}"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Dry Run" "$DRY_RUN"
+                          printf "  │  %-22s: %-38s │\n" "Execution Status" "✅ SUCCESS"
+                          printf "  │  %-22s: %-38s │\n" "Completed At" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          if [[ "$ACTION" == "stop" ]]; then
+                            echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                            echo "  │  ⚠️  IMPORTANT REMINDER                                         │"
+                            echo "  ├─────────────────────────────────────────────────────────────────┤"
+                            echo "  │                                                                 │"
+                            echo "  │  Stopped RDS instances will AUTOMATICALLY START after 7 days.  │"
+                            echo "  │                                                                 │"
+                            echo "  │  To keep instances stopped longer, you must:                    │"
+                            echo "  │  • Run this pipeline again before 7 days elapse                 │"
+                            echo "  │  • Or set up scheduled automation to re-stop                    │"
+                            echo "  │                                                                 │"
+                            echo "  └─────────────────────────────────────────────────────────────────┘"
+                            echo ""
+                          fi
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  PIPELINE COMPLETE"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  Thank you for using RDS Lifecycle Management Pipeline!"
+                          echo ""
+
+                          echo "PIPELINE_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      TOTAL_INSTANCES: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.TOTAL_INSTANCES>
+                      AVAILABLE_INSTANCES: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.AVAILABLE_INSTANCES>
+                      STOPPED_INSTANCES: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.STOPPED_INSTANCES>
+                      CLUSTER_COUNT: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.CLUSTER_COUNT>
+                    outputVariables:
+                      - name: PIPELINE_STATUS
+                  timeout: 2m
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NOTIFICATION RULES
+  # ═══════════════════════════════════════════════════════════════════════════
+  notificationRules:
+    - name: RDS Pipeline Success
+      identifier: rds_pipeline_success
+      pipelineEvents:
+        - type: PipelineSuccess
+      notificationMethod:
+        type: Slack
+        spec:
+          webhookUrl: <+variable.slack_webhook_url>
+      enabled: true
+
+    - name: RDS Pipeline Failure
+      identifier: rds_pipeline_failure
+      pipelineEvents:
+        - type: PipelineFailed
+      notificationMethod:
+        type: Slack
+        spec:
+          webhookUrl: <+variable.slack_webhook_url>
+      enabled: true

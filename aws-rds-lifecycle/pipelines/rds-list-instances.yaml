@@ -1,0 +1,158 @@
+###############################################################################
+# Pipeline: RDS Instance List (Simple)
+# Purpose: Quick listing of RDS instances and Aurora clusters
+# Author: Platform Team
+# Version: 1.0.0
+###############################################################################
+
+pipeline:
+  name: RDS Instance List
+  identifier: rds_instance_list
+  projectIdentifier: <+org.identifier>_platform
+  orgIdentifier: <+org.identifier>
+  description: Quick pipeline to list RDS instances and Aurora clusters
+  tags:
+    category: database
+    team: platform
+
+  variables:
+    - name: aws_region
+      type: String
+      description: AWS Region
+      required: true
+      value: <+input>.default(us-east-1).allowedValues(us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-central-1,ap-south-1)
+
+    - name: status_filter
+      type: String
+      description: Filter by database status
+      required: true
+      value: <+input>.default(all).allowedValues(all,available,stopped)
+
+    - name: engine_filter
+      type: String
+      description: Filter by database engine
+      required: false
+      value: <+input>.default("").allowedValues("",mysql,postgres,mariadb,oracle-ee,sqlserver-ee,aurora-mysql,aurora-postgresql)
+
+  stages:
+    - stage:
+        name: List Databases
+        identifier: list_databases
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Fetch RDS Instances
+                  identifier: fetch_instances
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════╗"
+                          echo "║              RDS DATABASE LIST - $AWS_REGION"
+                          echo "╚══════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Fetch RDS instances
+                          INSTANCES=$(aws rds describe-db-instances \
+                            --region "$AWS_REGION" \
+                            --query 'DBInstances[].{
+                              ID: DBInstanceIdentifier,
+                              Status: DBInstanceStatus,
+                              Engine: Engine,
+                              Class: DBInstanceClass,
+                              Storage: AllocatedStorage,
+                              MultiAZ: MultiAZ
+                            }' --output json)
+
+                          # Apply filters
+                          if [[ -n "${ENGINE_FILTER:-}" ]]; then
+                            INSTANCES=$(echo "$INSTANCES" | jq --arg e "$ENGINE_FILTER" '[.[] | select(.Engine | contains($e))]')
+                          fi
+
+                          case "$STATUS_FILTER" in
+                            "available") INSTANCES=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "available")]') ;;
+                            "stopped") INSTANCES=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "stopped")]') ;;
+                          esac
+
+                          # Counts
+                          TOTAL=$(echo "$INSTANCES" | jq 'length')
+                          AVAILABLE=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "available")] | length')
+                          STOPPED=$(echo "$INSTANCES" | jq '[.[] | select(.Status == "stopped")] | length')
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  SUMMARY: $TOTAL total | $AVAILABLE available | $STOPPED stopped"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          if [[ "$TOTAL" -gt 0 ]]; then
+                            echo "┌──────────────────────────┬─────────────┬──────────────┬───────────────┬────────┬─────────┐"
+                            echo "│ DB Identifier            │ Status      │ Engine       │ Class         │ Storage│ Multi-AZ│"
+                            echo "├──────────────────────────┼─────────────┼──────────────┼───────────────┼────────┼─────────┤"
+
+                            echo "$INSTANCES" | jq -r '.[] | [.ID, .Status, .Engine, .Class, (.Storage | tostring), (if .MultiAZ then "Yes" else "No" end)] | @tsv' | while IFS=$'\t' read -r id status engine class storage multiaz; do
+                              printf "│ %-24s │ %-11s │ %-12s │ %-13s │ %4s GB│ %-7s │\n" \
+                                "${id:0:24}" "$status" "${engine:0:12}" "${class:0:13}" "$storage" "$multiaz"
+                            done
+
+                            echo "└──────────────────────────┴─────────────┴──────────────┴───────────────┴────────┴─────────┘"
+                          else
+                            echo "  No RDS instances found matching criteria."
+                          fi
+                          echo ""
+
+                          # Aurora Clusters
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  AURORA CLUSTERS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          CLUSTERS=$(aws rds describe-db-clusters \
+                            --region "$AWS_REGION" \
+                            --query 'DBClusters[].{ID: DBClusterIdentifier, Status: Status, Engine: Engine, Members: DBClusterMembers}' \
+                            --output json 2>/dev/null || echo "[]")
+
+                          CLUSTER_COUNT=$(echo "$CLUSTERS" | jq 'length')
+
+                          if [[ "$CLUSTER_COUNT" -gt 0 ]]; then
+                            echo "┌──────────────────────────┬─────────────┬──────────────────────┬─────────┐"
+                            echo "│ Cluster Identifier       │ Status      │ Engine               │ Members │"
+                            echo "├──────────────────────────┼─────────────┼──────────────────────┼─────────┤"
+
+                            echo "$CLUSTERS" | jq -r '.[] | [.ID, .Status, .Engine, (.Members | length | tostring)] | @tsv' | while IFS=$'\t' read -r id status engine members; do
+                              printf "│ %-24s │ %-11s │ %-20s │ %-7s │\n" "${id:0:24}" "$status" "${engine:0:20}" "$members"
+                            done
+
+                            echo "└──────────────────────────┴─────────────┴──────────────────────┴─────────┘"
+                          else
+                            echo "  No Aurora clusters found."
+                          fi
+                          echo ""
+
+                          # Export
+                          {
+                            echo "TOTAL=$TOTAL"
+                            echo "AVAILABLE=$AVAILABLE"
+                            echo "STOPPED=$STOPPED"
+                            echo "CLUSTER_COUNT=$CLUSTER_COUNT"
+                          } >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      STATUS_FILTER: <+pipeline.variables.status_filter>
+                      ENGINE_FILTER: <+pipeline.variables.engine_filter>
+                    outputVariables:
+                      - name: TOTAL
+                      - name: AVAILABLE
+                      - name: STOPPED
+                      - name: CLUSTER_COUNT
+                  timeout: 5m

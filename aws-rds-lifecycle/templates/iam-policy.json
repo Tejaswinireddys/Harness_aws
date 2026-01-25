@@ -1,0 +1,62 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "RDSDescribePermissions",
+            "Effect": "Allow",
+            "Action": [
+                "rds:DescribeDBInstances",
+                "rds:DescribeDBClusters",
+                "rds:DescribeDBSnapshots",
+                "rds:DescribeDBClusterSnapshots",
+                "rds:DescribeDBEngineVersions",
+                "rds:DescribeDBParameterGroups",
+                "rds:DescribeDBSubnetGroups",
+                "rds:DescribeOptionGroups",
+                "rds:ListTagsForResource"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "RDSInstanceLifecycle",
+            "Effect": "Allow",
+            "Action": [
+                "rds:StartDBInstance",
+                "rds:StopDBInstance",
+                "rds:RebootDBInstance"
+            ],
+            "Resource": "arn:aws:rds:*:*:db:*"
+        },
+        {
+            "Sid": "RDSClusterLifecycle",
+            "Effect": "Allow",
+            "Action": [
+                "rds:StartDBCluster",
+                "rds:StopDBCluster"
+            ],
+            "Resource": "arn:aws:rds:*:*:cluster:*"
+        },
+        {
+            "Sid": "RDSSnapshotPermissions",
+            "Effect": "Allow",
+            "Action": [
+                "rds:CreateDBSnapshot",
+                "rds:CreateDBClusterSnapshot",
+                "rds:DescribeDBSnapshots",
+                "rds:DescribeDBClusterSnapshots"
+            ],
+            "Resource": [
+                "arn:aws:rds:*:*:db:*",
+                "arn:aws:rds:*:*:cluster:*",
+                "arn:aws:rds:*:*:snapshot:*",
+                "arn:aws:rds:*:*:cluster-snapshot:*"
+            ]
+        },
+        {
+            "Sid": "STSGetCallerIdentity",
+            "Effect": "Allow",
+            "Action": "sts:GetCallerIdentity",
+            "Resource": "*"
+        }
+    ]
+}

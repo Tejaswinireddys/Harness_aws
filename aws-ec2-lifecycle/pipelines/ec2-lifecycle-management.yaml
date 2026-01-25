@@ -1,0 +1,715 @@
+###############################################################################
+# Pipeline: EC2 Instance Lifecycle Management
+# Purpose: Start, Stop, and List EC2 instances across AWS regions
+# Author: Platform Team
+# Version: 1.0.0
+###############################################################################
+
+pipeline:
+  name: EC2 Instance Lifecycle Management
+  identifier: ec2_lifecycle_management
+  projectIdentifier: <+org.identifier>_platform
+  orgIdentifier: <+org.identifier>
+  description: |
+    Comprehensive EC2 instance lifecycle management pipeline.
+    Supports: List All, List Running, List Stopped, Start, and Stop operations.
+  tags:
+    category: infrastructure
+    team: platform
+    service: ec2-lifecycle
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PIPELINE VARIABLES (User Inputs)
+  # ═══════════════════════════════════════════════════════════════════════════
+  variables:
+    - name: action
+      type: String
+      description: Action to perform on EC2 instances
+      required: true
+      value: <+input>.allowedValues(list_all,list_running,list_stopped,start,stop)
+
+    - name: aws_region
+      type: String
+      description: AWS Region where instances are located
+      required: true
+      value: <+input>.default(us-east-1).allowedValues(us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-west-2,eu-central-1,ap-south-1,ap-southeast-1,ap-southeast-2,ap-northeast-1)
+
+    - name: instance_ids
+      type: String
+      description: Comma-separated instance IDs (required for start/stop actions)
+      required: false
+      value: <+input>
+
+    - name: environment_filter
+      type: String
+      description: Filter instances by Environment tag
+      required: false
+      value: <+input>.default("").allowedValues("",dev,staging,production,test)
+
+    - name: dry_run
+      type: String
+      description: Enable dry run mode (no actual changes)
+      required: false
+      value: <+input>.default(false).allowedValues(true,false)
+
+    - name: wait_for_state
+      type: String
+      description: Wait for instances to reach target state
+      required: false
+      value: <+input>.default(true).allowedValues(true,false)
+
+    - name: notify_on_completion
+      type: String
+      description: Send notification on completion
+      required: false
+      value: <+input>.default(true).allowedValues(true,false)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PIPELINE STAGES
+  # ═══════════════════════════════════════════════════════════════════════════
+  stages:
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 1: INITIALIZATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "1️⃣ Initialize"
+        identifier: initialize
+        description: Initialize pipeline and display configuration
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Display Configuration
+                  identifier: display_configuration
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                                                                          ║"
+                          echo "║              EC2 LIFECYCLE MANAGEMENT - PIPELINE STARTED                 ║"
+                          echo "║                                                                          ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  PIPELINE CONFIGURATION"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  EXECUTION PARAMETERS                                           │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-20s: %-42s │\n" "Action" "$ACTION"
+                          printf "  │  %-20s: %-42s │\n" "AWS Region" "$AWS_REGION"
+                          printf "  │  %-20s: %-42s │\n" "Environment Filter" "${ENVIRONMENT_FILTER:-All}"
+                          printf "  │  %-20s: %-42s │\n" "Dry Run" "$DRY_RUN"
+                          printf "  │  %-20s: %-42s │\n" "Wait for State" "$WAIT_FOR_STATE"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-20s: %-42s │\n" "Pipeline ID" "${HARNESS_PIPELINE_ID:-N/A}"
+                          printf "  │  %-20s: %-42s │\n" "Execution ID" "${HARNESS_BUILD_ID:-N/A}"
+                          printf "  │  %-20s: %-42s │\n" "Triggered By" "${HARNESS_USER_NAME:-System}"
+                          printf "  │  %-20s: %-42s │\n" "Timestamp" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          # Validate action and instance_ids combination
+                          if [[ "$ACTION" == "start" || "$ACTION" == "stop" ]]; then
+                            if [[ -z "$INSTANCE_IDS" ]]; then
+                              echo "❌ ERROR: Instance IDs are required for $ACTION action"
+                              exit 1
+                            fi
+                            echo "✅ Instance IDs provided for $ACTION action"
+                          fi
+
+                          echo ""
+                          echo "INITIALIZATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      INSTANCE_IDS: <+pipeline.variables.instance_ids>
+                      ENVIRONMENT_FILTER: <+pipeline.variables.environment_filter>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      WAIT_FOR_STATE: <+pipeline.variables.wait_for_state>
+                    outputVariables:
+                      - name: INITIALIZATION_STATUS
+                  timeout: 1m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: Abort
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 2: VALIDATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "2️⃣ Validate Credentials"
+        identifier: validate
+        description: Validate AWS credentials and permissions
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Validate AWS Credentials
+                  identifier: validate_aws_credentials
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║              AWS CREDENTIALS VALIDATION                                  ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Validate credentials by calling STS
+                          echo "🔐 Validating AWS credentials..."
+                          CALLER_IDENTITY=$(aws sts get-caller-identity --output json 2>&1) || {
+                            echo "❌ ERROR: Invalid AWS credentials"
+                            exit 1
+                          }
+
+                          ACCOUNT_ID=$(echo $CALLER_IDENTITY | jq -r '.Account')
+                          USER_ARN=$(echo $CALLER_IDENTITY | jq -r '.Arn')
+
+                          echo "✅ AWS Credentials Valid"
+                          echo ""
+                          echo "  Account ID : $ACCOUNT_ID"
+                          echo "  User ARN   : $USER_ARN"
+                          echo ""
+
+                          # Validate region
+                          echo "🌍 Validating Region: $AWS_REGION"
+                          aws ec2 describe-availability-zones --region $AWS_REGION > /dev/null 2>&1 || {
+                            echo "❌ ERROR: Invalid region: $AWS_REGION"
+                            exit 1
+                          }
+                          echo "✅ Region validated successfully"
+                          echo ""
+
+                          # Test EC2 permissions
+                          echo "🔑 Testing EC2 permissions..."
+                          aws ec2 describe-instances --region $AWS_REGION --max-results 1 > /dev/null 2>&1 || {
+                            echo "❌ ERROR: No permission to describe EC2 instances"
+                            exit 1
+                          }
+                          echo "✅ EC2 permissions verified"
+                          echo ""
+
+                          echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> $HARNESS_OUTPUT_FILE
+                          echo "VALIDATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                    outputVariables:
+                      - name: AWS_ACCOUNT_ID
+                      - name: VALIDATION_STATUS
+                  timeout: 2m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: Abort
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 3: DISCOVERY
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "3️⃣ Discover Instances"
+        identifier: discovery
+        description: Discover and list EC2 instances
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: List EC2 Instances
+                  identifier: list_instances
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    EC2 INSTANCE DISCOVERY                                ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Build filter based on action
+                          FILTER=""
+                          case $ACTION in
+                            "list_running") FILTER="Name=instance-state-name,Values=running" ;;
+                            "list_stopped") FILTER="Name=instance-state-name,Values=stopped" ;;
+                            *) FILTER="Name=instance-state-name,Values=running,stopped,pending,stopping" ;;
+                          esac
+
+                          # Add environment filter if specified
+                          if [[ -n "${ENVIRONMENT_FILTER:-}" ]]; then
+                            FILTER="$FILTER Name=tag:Environment,Values=$ENVIRONMENT_FILTER"
+                          fi
+
+                          echo "📡 Fetching instances with filter: $FILTER"
+                          echo ""
+
+                          # Query EC2 instances
+                          INSTANCES=$(aws ec2 describe-instances \
+                            --region "$AWS_REGION" \
+                            --filters $FILTER \
+                            --query 'Reservations[].Instances[].{
+                              InstanceId: InstanceId,
+                              State: State.Name,
+                              InstanceType: InstanceType,
+                              PrivateIp: PrivateIpAddress,
+                              Name: Tags[?Key==`Name`].Value | [0],
+                              Environment: Tags[?Key==`Environment`].Value | [0]
+                            }' \
+                            --output json)
+
+                          # Count by state
+                          TOTAL=$(echo "$INSTANCES" | jq 'length')
+                          RUNNING=$(echo "$INSTANCES" | jq '[.[] | select(.State == "running")] | length')
+                          STOPPED=$(echo "$INSTANCES" | jq '[.[] | select(.State == "stopped")] | length')
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  DISCOVERY SUMMARY"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  INSTANCE COUNT BY STATE                                        │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  ● Running   : %-48s │\n" "$RUNNING instances"
+                          printf "  │  ● Stopped   : %-48s │\n" "$STOPPED instances"
+                          printf "  │  ● Total     : %-48s │\n" "$TOTAL instances"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          # Display instance details
+                          if [[ "$TOTAL" -gt 0 ]]; then
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo "  INSTANCE DETAILS"
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo ""
+                            echo "┌────────────────────┬─────────────┬───────────────┬──────────────────┬────────────────────────────┐"
+                            echo "│ Instance ID        │ State       │ Type          │ Private IP       │ Name                       │"
+                            echo "├────────────────────┼─────────────┼───────────────┼──────────────────┼────────────────────────────┤"
+
+                            echo "$INSTANCES" | jq -r '.[] | [.InstanceId, .State, .InstanceType, .PrivateIp // "N/A", .Name // "Unnamed"] | @tsv' | while IFS=$'\t' read -r id state type ip name; do
+                              printf "│ %-18s │ %-11s │ %-13s │ %-16s │ %-26s │\n" "$id" "$state" "$type" "${ip:-N/A}" "${name:0:26}"
+                            done
+
+                            echo "└────────────────────┴─────────────┴───────────────┴──────────────────┴────────────────────────────┘"
+                          fi
+                          echo ""
+
+                          # Create instance lists
+                          RUNNING_IDS=$(echo "$INSTANCES" | jq -r '[.[] | select(.State == "running") | .InstanceId] | join(",")')
+                          STOPPED_IDS=$(echo "$INSTANCES" | jq -r '[.[] | select(.State == "stopped") | .InstanceId] | join(",")')
+
+                          # Export outputs
+                          {
+                            echo "TOTAL_INSTANCES=$TOTAL"
+                            echo "RUNNING_INSTANCES=$RUNNING"
+                            echo "STOPPED_INSTANCES=$STOPPED"
+                            echo "RUNNING_IDS=$RUNNING_IDS"
+                            echo "STOPPED_IDS=$STOPPED_IDS"
+                          } >> "$HARNESS_OUTPUT_FILE"
+
+                          echo "✅ Discovery complete!"
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      ENVIRONMENT_FILTER: <+pipeline.variables.environment_filter>
+                    outputVariables:
+                      - name: TOTAL_INSTANCES
+                      - name: RUNNING_INSTANCES
+                      - name: STOPPED_INSTANCES
+                      - name: RUNNING_IDS
+                      - name: STOPPED_IDS
+                  timeout: 5m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 4: ACTION EXECUTION (Conditional)
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "4️⃣ Execute Action"
+        identifier: execute_action
+        description: Execute start/stop action on instances
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.action> == "start" || <+pipeline.variables.action> == "stop"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Pre-Action Confirmation
+                  identifier: pre_action_confirmation
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    PRE-ACTION CONFIRMATION                               ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          IFS=',' read -ra IDS <<< "$INSTANCE_IDS"
+                          INSTANCE_COUNT=${#IDS[@]}
+
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  ACTION DETAILS                                                 │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  Action              : %-41s │\n" "$ACTION"
+                          printf "  │  Instance Count      : %-41s │\n" "$INSTANCE_COUNT"
+                          printf "  │  Dry Run             : %-41s │\n" "$DRY_RUN"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+                          echo "  Target Instances:"
+                          for id in "${IDS[@]}"; do
+                            echo "    → $id"
+                          done
+                          echo ""
+
+                          if [[ "$DRY_RUN" == "true" ]]; then
+                            echo "⚠️  DRY RUN MODE - No actual changes will be made"
+                          fi
+
+                          echo ""
+                          echo "PRE_ACTION_STATUS=confirmed" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      INSTANCE_IDS: <+pipeline.variables.instance_ids>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                    outputVariables:
+                      - name: PRE_ACTION_STATUS
+                  timeout: 1m
+
+              - step:
+                  type: ShellScript
+                  name: Execute Instance Action
+                  identifier: execute_instance_action
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    EXECUTING EC2 ACTION                                  ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          INSTANCE_LIST=$(echo "$INSTANCE_IDS" | tr ',' ' ')
+
+                          # Check dry run mode
+                          if [[ "$DRY_RUN" == "true" ]]; then
+                            echo "🔍 DRY RUN MODE - Simulating $ACTION action"
+                            echo ""
+                            echo "Would execute: aws ec2 ${ACTION}-instances --instance-ids $INSTANCE_LIST"
+                            echo ""
+                            echo "ACTION_RESULT=dry_run_success" >> $HARNESS_OUTPUT_FILE
+                            exit 0
+                          fi
+
+                          # Execute action
+                          if [[ "$ACTION" == "start" ]]; then
+                            echo "🚀 Starting instances..."
+                            RESULT=$(aws ec2 start-instances \
+                              --region "$AWS_REGION" \
+                              --instance-ids $INSTANCE_LIST \
+                              --output json)
+
+                            echo "$RESULT" | jq -r '.StartingInstances[] | "  \(.InstanceId): \(.PreviousState.Name) → \(.CurrentState.Name)"'
+                            TARGET_STATE="running"
+                          else
+                            echo "⏹️  Stopping instances..."
+                            RESULT=$(aws ec2 stop-instances \
+                              --region "$AWS_REGION" \
+                              --instance-ids $INSTANCE_LIST \
+                              --output json)
+
+                            echo "$RESULT" | jq -r '.StoppingInstances[] | "  \(.InstanceId): \(.PreviousState.Name) → \(.CurrentState.Name)"'
+                            TARGET_STATE="stopped"
+                          fi
+
+                          echo ""
+                          echo "✅ Action command issued successfully!"
+                          echo ""
+
+                          # Wait for state if enabled
+                          if [[ "$WAIT_FOR_STATE" == "true" ]]; then
+                            echo "⏳ Waiting for instances to reach $TARGET_STATE state..."
+
+                            if [[ "$ACTION" == "start" ]]; then
+                              aws ec2 wait instance-running \
+                                --region "$AWS_REGION" \
+                                --instance-ids $INSTANCE_LIST
+                            else
+                              aws ec2 wait instance-stopped \
+                                --region "$AWS_REGION" \
+                                --instance-ids $INSTANCE_LIST
+                            fi
+
+                            echo "✅ All instances have reached $TARGET_STATE state!"
+                          fi
+
+                          echo ""
+                          echo "ACTION_RESULT=success" >> $HARNESS_OUTPUT_FILE
+                          echo "TARGET_STATE=$TARGET_STATE" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      INSTANCE_IDS: <+pipeline.variables.instance_ids>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      WAIT_FOR_STATE: <+pipeline.variables.wait_for_state>
+                    outputVariables:
+                      - name: ACTION_RESULT
+                      - name: TARGET_STATE
+                  timeout: 10m
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: StageRollback
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 5: VERIFICATION (Conditional)
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "5️⃣ Verify State"
+        identifier: verify_state
+        description: Verify instances are in expected state
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.action> == "start" || <+pipeline.variables.action> == "stop"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Verify Instance States
+                  identifier: verify_instance_states
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    STATE VERIFICATION                                    ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          if [[ "$DRY_RUN" == "true" ]]; then
+                            echo "⏭️  Skipping verification (dry run mode)"
+                            echo "VERIFICATION_STATUS=skipped" >> $HARNESS_OUTPUT_FILE
+                            exit 0
+                          fi
+
+                          INSTANCE_LIST=$(echo "$INSTANCE_IDS" | tr ',' ' ')
+                          EXPECTED_STATE=""
+
+                          if [[ "$ACTION" == "start" ]]; then
+                            EXPECTED_STATE="running"
+                          else
+                            EXPECTED_STATE="stopped"
+                          fi
+
+                          echo "🔍 Verifying instances are in $EXPECTED_STATE state..."
+                          echo ""
+
+                          STATES=$(aws ec2 describe-instances \
+                            --region "$AWS_REGION" \
+                            --instance-ids $INSTANCE_LIST \
+                            --query 'Reservations[].Instances[].{InstanceId: InstanceId, State: State.Name, Name: Tags[?Key==`Name`].Value | [0]}' \
+                            --output json)
+
+                          echo "┌────────────────────┬─────────────┬────────────────────────────┬──────────────┐"
+                          echo "│ Instance ID        │ State       │ Name                       │ Status       │"
+                          echo "├────────────────────┼─────────────┼────────────────────────────┼──────────────┤"
+
+                          VERIFIED_COUNT=0
+                          TOTAL_COUNT=0
+
+                          while IFS=$'\t' read -r id state name; do
+                            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+
+                            if [[ "$state" == "$EXPECTED_STATE" ]]; then
+                              VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+                              status="✅ VERIFIED"
+                            else
+                              status="❌ MISMATCH"
+                            fi
+
+                            printf "│ %-18s │ %-11s │ %-26s │ %-12s │\n" "$id" "$state" "${name:0:26}" "$status"
+                          done < <(echo "$STATES" | jq -r '.[] | [.InstanceId, .State, .Name // "Unnamed"] | @tsv')
+
+                          echo "└────────────────────┴─────────────┴────────────────────────────┴──────────────┘"
+                          echo ""
+
+                          if [[ $VERIFIED_COUNT -eq $TOTAL_COUNT ]]; then
+                            echo "✅ All $TOTAL_COUNT instances verified in $EXPECTED_STATE state!"
+                            echo ""
+                            echo "VERIFICATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                          else
+                            echo "⚠️  Warning: $((TOTAL_COUNT - VERIFIED_COUNT)) instance(s) not in expected state"
+                            echo ""
+                            echo "VERIFICATION_STATUS=partial" >> $HARNESS_OUTPUT_FILE
+                          fi
+
+                          echo "VERIFIED_COUNT=$VERIFIED_COUNT" >> $HARNESS_OUTPUT_FILE
+                          echo "TOTAL_COUNT=$TOTAL_COUNT" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      INSTANCE_IDS: <+pipeline.variables.instance_ids>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                    outputVariables:
+                      - name: VERIFICATION_STATUS
+                      - name: VERIFIED_COUNT
+                      - name: TOTAL_COUNT
+                  timeout: 5m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 6: SUMMARY & NOTIFICATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "6️⃣ Summary & Notify"
+        identifier: summary_notify
+        description: Generate summary and send notifications
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Generate Summary Report
+                  identifier: generate_summary
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                                                                          ║"
+                          echo "║                    PIPELINE EXECUTION SUMMARY                            ║"
+                          echo "║                                                                          ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  EXECUTION DETAILS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  PIPELINE RESULTS                                               │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Action Performed" "$ACTION"
+                          printf "  │  %-22s: %-38s │\n" "Region" "$AWS_REGION"
+                          printf "  │  %-22s: %-38s │\n" "Total Instances Found" "${TOTAL_INSTANCES:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Running Instances" "${RUNNING_INSTANCES:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Stopped Instances" "${STOPPED_INSTANCES:-N/A}"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+
+                          if [[ "$ACTION" == "start" || "$ACTION" == "stop" ]]; then
+                            printf "  │  %-22s: %-38s │\n" "Instances Processed" "${INSTANCE_IDS:-N/A}"
+                            printf "  │  %-22s: %-38s │\n" "Dry Run" "$DRY_RUN"
+                          fi
+
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Execution Status" "✅ SUCCESS"
+                          printf "  │  %-22s: %-38s │\n" "Completed At" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  PIPELINE COMPLETE"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  Thank you for using EC2 Lifecycle Management Pipeline!"
+                          echo ""
+
+                          echo "PIPELINE_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      INSTANCE_IDS: <+pipeline.variables.instance_ids>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      TOTAL_INSTANCES: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.TOTAL_INSTANCES>
+                      RUNNING_INSTANCES: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.RUNNING_INSTANCES>
+                      STOPPED_INSTANCES: <+pipeline.stages.discovery.spec.execution.steps.list_instances.output.outputVariables.STOPPED_INSTANCES>
+                    outputVariables:
+                      - name: PIPELINE_STATUS
+                  timeout: 2m
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NOTIFICATION RULES
+  # ═══════════════════════════════════════════════════════════════════════════
+  notificationRules:
+    - name: Pipeline Success Notification
+      identifier: pipeline_success_notification
+      pipelineEvents:
+        - type: PipelineSuccess
+      notificationMethod:
+        type: Slack
+        spec:
+          webhookUrl: <+variable.slack_webhook_url>
+      enabled: true
+
+    - name: Pipeline Failure Notification
+      identifier: pipeline_failure_notification
+      pipelineEvents:
+        - type: PipelineFailed
+      notificationMethod:
+        type: Slack
+        spec:
+          webhookUrl: <+variable.slack_webhook_url>
+      enabled: true

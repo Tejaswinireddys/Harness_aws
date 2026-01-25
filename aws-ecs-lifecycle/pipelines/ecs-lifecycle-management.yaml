@@ -1,0 +1,655 @@
+###############################################################################
+# Pipeline: ECS Cluster Lifecycle Management
+# Purpose: List, Scale, Restart, and Stop ECS services
+# Author: Platform Team
+# Version: 1.0.0
+###############################################################################
+
+pipeline:
+  name: ECS Cluster Lifecycle Management
+  identifier: ecs_lifecycle_management
+  projectIdentifier: <+org.identifier>_platform
+  orgIdentifier: <+org.identifier>
+  description: |
+    Comprehensive ECS cluster and service lifecycle management pipeline.
+    Supports: List, Scale Up, Scale Down, Scale To, Restart, and Stop operations.
+  tags:
+    category: container
+    team: platform
+    service: ecs-lifecycle
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PIPELINE VARIABLES (User Inputs)
+  # ═══════════════════════════════════════════════════════════════════════════
+  variables:
+    - name: action
+      type: String
+      description: Action to perform on ECS resources
+      required: true
+      value: <+input>.allowedValues(list_clusters,list_services,list_tasks,scale_up,scale_down,scale_to,restart,stop)
+
+    - name: aws_region
+      type: String
+      description: AWS Region where cluster is located
+      required: true
+      value: <+input>.default(us-east-1).allowedValues(us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-west-2,eu-central-1,ap-south-1,ap-southeast-1,ap-southeast-2,ap-northeast-1)
+
+    - name: cluster_name
+      type: String
+      description: ECS cluster name (required for service operations)
+      required: false
+      value: <+input>
+
+    - name: service_names
+      type: String
+      description: Comma-separated service names (required for scale/restart/stop)
+      required: false
+      value: <+input>
+
+    - name: desired_count
+      type: String
+      description: Target desired count (required for scale_to action)
+      required: false
+      value: <+input>
+
+    - name: dry_run
+      type: String
+      description: Enable dry run mode (no actual changes)
+      required: false
+      value: <+input>.default(false).allowedValues(true,false)
+
+    - name: wait_for_stable
+      type: String
+      description: Wait for services to stabilize
+      required: false
+      value: <+input>.default(true).allowedValues(true,false)
+
+    - name: force_new_deployment
+      type: String
+      description: Force new deployment (for restart)
+      required: false
+      value: <+input>.default(false).allowedValues(true,false)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PIPELINE STAGES
+  # ═══════════════════════════════════════════════════════════════════════════
+  stages:
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 1: INITIALIZATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "1️⃣ Initialize"
+        identifier: initialize
+        description: Initialize pipeline and display configuration
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Display Configuration
+                  identifier: display_configuration
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                                                                          ║"
+                          echo "║              ECS LIFECYCLE MANAGEMENT - PIPELINE STARTED                 ║"
+                          echo "║                                                                          ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  PIPELINE CONFIGURATION"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  EXECUTION PARAMETERS                                           │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Action" "$ACTION"
+                          printf "  │  %-22s: %-38s │\n" "AWS Region" "$AWS_REGION"
+                          printf "  │  %-22s: %-38s │\n" "Cluster" "${CLUSTER_NAME:-All Clusters}"
+                          printf "  │  %-22s: %-38s │\n" "Services" "${SERVICE_NAMES:-All Services}"
+                          printf "  │  %-22s: %-38s │\n" "Desired Count" "${DESIRED_COUNT:-N/A}"
+                          printf "  │  %-22s: %-38s │\n" "Dry Run" "$DRY_RUN"
+                          printf "  │  %-22s: %-38s │\n" "Wait for Stable" "$WAIT_FOR_STABLE"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Timestamp" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          # Validate required parameters
+                          if [[ "$ACTION" =~ ^(scale_up|scale_down|scale_to|restart|stop)$ ]]; then
+                            if [[ -z "$CLUSTER_NAME" ]]; then
+                              echo "❌ ERROR: CLUSTER_NAME required for $ACTION"
+                              exit 1
+                            fi
+                            if [[ -z "$SERVICE_NAMES" ]]; then
+                              echo "❌ ERROR: SERVICE_NAMES required for $ACTION"
+                              exit 1
+                            fi
+                            echo "✅ Required parameters validated"
+                          fi
+
+                          if [[ "$ACTION" == "scale_to" && -z "$DESIRED_COUNT" ]]; then
+                            echo "❌ ERROR: DESIRED_COUNT required for scale_to action"
+                            exit 1
+                          fi
+
+                          echo ""
+                          echo "INITIALIZATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      CLUSTER_NAME: <+pipeline.variables.cluster_name>
+                      SERVICE_NAMES: <+pipeline.variables.service_names>
+                      DESIRED_COUNT: <+pipeline.variables.desired_count>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      WAIT_FOR_STABLE: <+pipeline.variables.wait_for_stable>
+                    outputVariables:
+                      - name: INITIALIZATION_STATUS
+                  timeout: 1m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 2: VALIDATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "2️⃣ Validate Credentials"
+        identifier: validate
+        description: Validate AWS credentials and ECS permissions
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Validate AWS Credentials
+                  identifier: validate_aws_credentials
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║              AWS CREDENTIALS & ECS PERMISSIONS VALIDATION                ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Validate STS
+                          echo "🔐 Validating AWS credentials..."
+                          CALLER_IDENTITY=$(aws sts get-caller-identity --output json 2>&1) || {
+                            echo "❌ ERROR: Invalid AWS credentials"
+                            exit 1
+                          }
+
+                          ACCOUNT_ID=$(echo $CALLER_IDENTITY | jq -r '.Account')
+                          echo "✅ AWS Credentials Valid (Account: $ACCOUNT_ID)"
+                          echo ""
+
+                          # Validate ECS permissions
+                          echo "🐳 Validating ECS permissions..."
+                          CLUSTERS=$(aws ecs list-clusters --region $AWS_REGION --output json 2>&1) || {
+                            echo "❌ ERROR: No permission to list ECS clusters"
+                            exit 1
+                          }
+                          CLUSTER_COUNT=$(echo "$CLUSTERS" | jq '.clusterArns | length')
+                          echo "✅ ECS ListClusters permission verified ($CLUSTER_COUNT clusters found)"
+                          echo ""
+
+                          echo "AWS_ACCOUNT_ID=$ACCOUNT_ID" >> $HARNESS_OUTPUT_FILE
+                          echo "CLUSTER_COUNT=$CLUSTER_COUNT" >> $HARNESS_OUTPUT_FILE
+                          echo "VALIDATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                    outputVariables:
+                      - name: AWS_ACCOUNT_ID
+                      - name: CLUSTER_COUNT
+                      - name: VALIDATION_STATUS
+                  timeout: 2m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 3: DISCOVERY
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "3️⃣ Discover Resources"
+        identifier: discovery
+        description: Discover ECS clusters, services, and tasks
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: List ECS Resources
+                  identifier: list_resources
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    ECS RESOURCE DISCOVERY                                ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # List clusters
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  ECS CLUSTERS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          CLUSTER_ARNS=$(aws ecs list-clusters --region "$AWS_REGION" --query 'clusterArns' --output json)
+                          CLUSTER_COUNT=$(echo "$CLUSTER_ARNS" | jq 'length')
+
+                          if [[ "$CLUSTER_COUNT" -eq 0 ]]; then
+                            echo "  No ECS clusters found in $AWS_REGION"
+                          else
+                            CLUSTERS=$(aws ecs describe-clusters \
+                              --region "$AWS_REGION" \
+                              --clusters $(echo "$CLUSTER_ARNS" | jq -r '.[]') \
+                              --query 'clusters[].{Name: clusterName, Status: status, Running: runningTasksCount, Pending: pendingTasksCount, Services: activeServicesCount}' \
+                              --output json)
+
+                            echo "┌────────────────────────────┬──────────┬──────────┬──────────┬──────────┐"
+                            echo "│ Cluster Name               │ Status   │ Running  │ Pending  │ Services │"
+                            echo "├────────────────────────────┼──────────┼──────────┼──────────┼──────────┤"
+
+                            echo "$CLUSTERS" | jq -r '.[] | [.Name, .Status, (.Running|tostring), (.Pending|tostring), (.Services|tostring)] | @tsv' | while IFS=$'\t' read -r name status running pending services; do
+                              printf "│ %-26s │ %-8s │ %8s │ %8s │ %8s │\n" "${name:0:26}" "$status" "$running" "$pending" "$services"
+                            done
+
+                            echo "└────────────────────────────┴──────────┴──────────┴──────────┴──────────┘"
+                          fi
+                          echo ""
+
+                          # List services if cluster specified
+                          if [[ -n "${CLUSTER_NAME:-}" ]]; then
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo "  SERVICES IN CLUSTER: $CLUSTER_NAME"
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo ""
+
+                            SERVICE_ARNS=$(aws ecs list-services --region "$AWS_REGION" --cluster "$CLUSTER_NAME" --query 'serviceArns' --output json 2>/dev/null || echo "[]")
+                            SERVICE_COUNT=$(echo "$SERVICE_ARNS" | jq 'length')
+
+                            if [[ "$SERVICE_COUNT" -eq 0 ]]; then
+                              echo "  No services found in cluster"
+                            else
+                              SERVICES=$(aws ecs describe-services \
+                                --region "$AWS_REGION" \
+                                --cluster "$CLUSTER_NAME" \
+                                --services $(echo "$SERVICE_ARNS" | jq -r '.[]' | head -10) \
+                                --query 'services[].{Name: serviceName, Status: status, Desired: desiredCount, Running: runningCount, Pending: pendingCount, Launch: launchType}' \
+                                --output json)
+
+                              echo "┌──────────────────────────────┬──────────┬─────────┬─────────┬─────────┬──────────┐"
+                              echo "│ Service Name                 │ Status   │ Desired │ Running │ Pending │ Launch   │"
+                              echo "├──────────────────────────────┼──────────┼─────────┼─────────┼─────────┼──────────┤"
+
+                              echo "$SERVICES" | jq -r '.[] | [.Name, .Status, (.Desired|tostring), (.Running|tostring), (.Pending|tostring), (.Launch // "EC2")] | @tsv' | while IFS=$'\t' read -r name status desired running pending launch; do
+                                printf "│ %-28s │ %-8s │ %7s │ %7s │ %7s │ %-8s │\n" "${name:0:28}" "$status" "$desired" "$running" "$pending" "${launch:0:8}"
+                              done
+
+                              echo "└──────────────────────────────┴──────────┴─────────┴─────────┴─────────┴──────────┘"
+                            fi
+                            echo ""
+
+                            echo "SERVICE_COUNT=$SERVICE_COUNT" >> "$HARNESS_OUTPUT_FILE"
+                          fi
+
+                          echo "CLUSTER_COUNT=$CLUSTER_COUNT" >> "$HARNESS_OUTPUT_FILE"
+                          echo "✅ Discovery complete!"
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      CLUSTER_NAME: <+pipeline.variables.cluster_name>
+                    outputVariables:
+                      - name: CLUSTER_COUNT
+                      - name: SERVICE_COUNT
+                  timeout: 5m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 4: ACTION EXECUTION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "4️⃣ Execute Action"
+        identifier: execute_action
+        description: Execute scale/restart/stop action on services
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.action> == "scale_up" || <+pipeline.variables.action> == "scale_down" || <+pipeline.variables.action> == "scale_to" || <+pipeline.variables.action> == "restart" || <+pipeline.variables.action> == "stop"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Execute Service Action
+                  identifier: execute_service_action
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    EXECUTING ECS ACTION                                  ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Dry run check
+                          if [[ "$DRY_RUN" == "true" ]]; then
+                            echo "🔍 DRY RUN MODE - No changes will be made"
+                            echo ""
+                            echo "Would $ACTION on:"
+                            echo "  Cluster: $CLUSTER_NAME"
+                            echo "  Services: $SERVICE_NAMES"
+                            [[ -n "${DESIRED_COUNT:-}" ]] && echo "  Desired Count: $DESIRED_COUNT"
+                            echo ""
+                            echo "ACTION_RESULT=dry_run" >> $HARNESS_OUTPUT_FILE
+                            exit 0
+                          fi
+
+                          SUCCESS_COUNT=0
+                          FAILED_COUNT=0
+
+                          IFS=',' read -ra SERVICES <<< "$SERVICE_NAMES"
+                          for svc in "${SERVICES[@]}"; do
+                            svc=$(echo "$svc" | tr -d ' ')
+                            echo "Processing: $svc"
+
+                            # Get current desired count
+                            CURRENT=$(aws ecs describe-services \
+                              --region "$AWS_REGION" \
+                              --cluster "$CLUSTER_NAME" \
+                              --services "$svc" \
+                              --query 'services[0].desiredCount' \
+                              --output text 2>/dev/null) || {
+                              echo "  ❌ Failed to get service info"
+                              FAILED_COUNT=$((FAILED_COUNT + 1))
+                              continue
+                            }
+
+                            # Calculate new count
+                            case $ACTION in
+                              "scale_up") NEW=$((CURRENT + 1)) ;;
+                              "scale_down") NEW=$((CURRENT > 0 ? CURRENT - 1 : 0)) ;;
+                              "scale_to") NEW=$DESIRED_COUNT ;;
+                              "stop") NEW=0 ;;
+                              "restart") NEW=$CURRENT ;;
+                            esac
+
+                            # Build command
+                            CMD="aws ecs update-service --region $AWS_REGION --cluster $CLUSTER_NAME --service $svc"
+
+                            if [[ "$ACTION" == "restart" ]]; then
+                              CMD="$CMD --force-new-deployment"
+                              echo "  🔄 Forcing new deployment..."
+                            else
+                              CMD="$CMD --desired-count $NEW"
+                              echo "  📊 Scaling: $CURRENT → $NEW"
+                            fi
+
+                            $CMD --output json > /dev/null 2>&1 && {
+                              echo "  ✅ Success"
+                              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                            } || {
+                              echo "  ❌ Failed"
+                              FAILED_COUNT=$((FAILED_COUNT + 1))
+                            }
+                            echo ""
+                          done
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  RESULTS: $SUCCESS_COUNT succeeded, $FAILED_COUNT failed"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          # Wait for stability if enabled
+                          if [[ "$WAIT_FOR_STABLE" == "true" ]]; then
+                            echo "⏳ Waiting for services to stabilize..."
+                            for svc in "${SERVICES[@]}"; do
+                              svc=$(echo "$svc" | tr -d ' ')
+                              aws ecs wait services-stable \
+                                --region "$AWS_REGION" \
+                                --cluster "$CLUSTER_NAME" \
+                                --services "$svc" 2>/dev/null && {
+                                echo "  ✅ $svc is stable"
+                              } || {
+                                echo "  ⚠️  Timeout for $svc"
+                              }
+                            done
+                            echo ""
+                          fi
+
+                          {
+                            echo "ACTION_RESULT=success"
+                            echo "SUCCESS_COUNT=$SUCCESS_COUNT"
+                            echo "FAILED_COUNT=$FAILED_COUNT"
+                          } >> "$HARNESS_OUTPUT_FILE"
+
+                          echo "✅ Action execution complete!"
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      ACTION: <+pipeline.variables.action>
+                      CLUSTER_NAME: <+pipeline.variables.cluster_name>
+                      SERVICE_NAMES: <+pipeline.variables.service_names>
+                      DESIRED_COUNT: <+pipeline.variables.desired_count>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                      WAIT_FOR_STABLE: <+pipeline.variables.wait_for_stable>
+                    outputVariables:
+                      - name: ACTION_RESULT
+                      - name: SUCCESS_COUNT
+                      - name: FAILED_COUNT
+                  timeout: 15m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 5: VERIFICATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "5️⃣ Verify State"
+        identifier: verify_state
+        description: Verify services are in expected state
+        type: Custom
+        when:
+          pipelineStatus: Success
+          condition: (<+pipeline.variables.action> == "scale_up" || <+pipeline.variables.action> == "scale_down" || <+pipeline.variables.action> == "scale_to" || <+pipeline.variables.action> == "restart" || <+pipeline.variables.action> == "stop") && <+pipeline.variables.dry_run> == "false"
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Verify Service States
+                  identifier: verify_service_states
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                    STATE VERIFICATION                                    ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          VERIFIED=0
+                          TOTAL=0
+
+                          echo "┌──────────────────────────────┬──────────┬─────────┬─────────┬────────────────┐"
+                          echo "│ Service Name                 │ Status   │ Desired │ Running │ Health         │"
+                          echo "├──────────────────────────────┼──────────┼─────────┼─────────┼────────────────┤"
+
+                          IFS=',' read -ra SERVICES <<< "$SERVICE_NAMES"
+                          for svc in "${SERVICES[@]}"; do
+                            svc=$(echo "$svc" | tr -d ' ')
+                            TOTAL=$((TOTAL + 1))
+
+                            INFO=$(aws ecs describe-services \
+                              --region "$AWS_REGION" \
+                              --cluster "$CLUSTER_NAME" \
+                              --services "$svc" \
+                              --query 'services[0].{Status: status, Desired: desiredCount, Running: runningCount, Pending: pendingCount}' \
+                              --output json 2>/dev/null) || continue
+
+                            status=$(echo "$INFO" | jq -r '.Status')
+                            desired=$(echo "$INFO" | jq -r '.Desired')
+                            running=$(echo "$INFO" | jq -r '.Running')
+                            pending=$(echo "$INFO" | jq -r '.Pending')
+
+                            if [[ "$running" -eq "$desired" && "$pending" -eq 0 ]]; then
+                              VERIFIED=$((VERIFIED + 1))
+                              health="✅ HEALTHY"
+                            elif [[ "$desired" -eq 0 && "$running" -eq 0 ]]; then
+                              VERIFIED=$((VERIFIED + 1))
+                              health="⏹️  STOPPED"
+                            else
+                              health="⏳ SCALING"
+                            fi
+
+                            printf "│ %-28s │ %-8s │ %7s │ %7s │ %-14s │\n" \
+                              "${svc:0:28}" "$status" "$desired" "$running" "$health"
+                          done
+
+                          echo "└──────────────────────────────┴──────────┴─────────┴─────────┴────────────────┘"
+                          echo ""
+
+                          if [[ $VERIFIED -eq $TOTAL ]]; then
+                            echo "✅ All $TOTAL services verified!"
+                            echo "VERIFICATION_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                          else
+                            echo "⚠️  $VERIFIED of $TOTAL services verified"
+                            echo "VERIFICATION_STATUS=partial" >> $HARNESS_OUTPUT_FILE
+                          fi
+
+                          echo "VERIFIED_COUNT=$VERIFIED" >> $HARNESS_OUTPUT_FILE
+                          echo "TOTAL_COUNT=$TOTAL" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      CLUSTER_NAME: <+pipeline.variables.cluster_name>
+                      SERVICE_NAMES: <+pipeline.variables.service_names>
+                    outputVariables:
+                      - name: VERIFICATION_STATUS
+                      - name: VERIFIED_COUNT
+                      - name: TOTAL_COUNT
+                  timeout: 5m
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 6: SUMMARY & NOTIFICATION
+    # ─────────────────────────────────────────────────────────────────────────
+    - stage:
+        name: "6️⃣ Summary & Notify"
+        identifier: summary_notify
+        description: Generate summary and send notifications
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Generate Summary Report
+                  identifier: generate_summary
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════════════════╗"
+                          echo "║                                                                          ║"
+                          echo "║                    PIPELINE EXECUTION SUMMARY                            ║"
+                          echo "║                                                                          ║"
+                          echo "╚══════════════════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  EXECUTION DETAILS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  ┌─────────────────────────────────────────────────────────────────┐"
+                          echo "  │  PIPELINE RESULTS                                               │"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Action Performed" "$ACTION"
+                          printf "  │  %-22s: %-38s │\n" "Region" "$AWS_REGION"
+                          printf "  │  %-22s: %-38s │\n" "Cluster" "${CLUSTER_NAME:-All}"
+                          printf "  │  %-22s: %-38s │\n" "Services" "${SERVICE_NAMES:-All}"
+                          printf "  │  %-22s: %-38s │\n" "Dry Run" "$DRY_RUN"
+                          echo "  ├─────────────────────────────────────────────────────────────────┤"
+                          printf "  │  %-22s: %-38s │\n" "Execution Status" "✅ SUCCESS"
+                          printf "  │  %-22s: %-38s │\n" "Completed At" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+                          echo "  └─────────────────────────────────────────────────────────────────┘"
+                          echo ""
+
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  PIPELINE COMPLETE"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+                          echo "  Thank you for using ECS Lifecycle Management Pipeline!"
+                          echo ""
+
+                          echo "PIPELINE_STATUS=success" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      ACTION: <+pipeline.variables.action>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      CLUSTER_NAME: <+pipeline.variables.cluster_name>
+                      SERVICE_NAMES: <+pipeline.variables.service_names>
+                      DRY_RUN: <+pipeline.variables.dry_run>
+                    outputVariables:
+                      - name: PIPELINE_STATUS
+                  timeout: 2m
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # NOTIFICATION RULES
+  # ═══════════════════════════════════════════════════════════════════════════
+  notificationRules:
+    - name: ECS Pipeline Success
+      identifier: ecs_pipeline_success
+      pipelineEvents:
+        - type: PipelineSuccess
+      notificationMethod:
+        type: Slack
+        spec:
+          webhookUrl: <+variable.slack_webhook_url>
+      enabled: true
+
+    - name: ECS Pipeline Failure
+      identifier: ecs_pipeline_failure
+      pipelineEvents:
+        - type: PipelineFailed
+      notificationMethod:
+        type: Slack
+        spec:
+          webhookUrl: <+variable.slack_webhook_url>
+      enabled: true

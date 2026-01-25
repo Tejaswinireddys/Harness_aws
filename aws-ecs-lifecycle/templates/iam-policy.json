@@ -1,0 +1,88 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ECSDescribePermissions",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:ListClusters",
+                "ecs:DescribeClusters",
+                "ecs:ListServices",
+                "ecs:DescribeServices",
+                "ecs:ListTasks",
+                "ecs:DescribeTasks",
+                "ecs:ListTaskDefinitions",
+                "ecs:DescribeTaskDefinition",
+                "ecs:ListContainerInstances",
+                "ecs:DescribeContainerInstances",
+                "ecs:DescribeCapacityProviders",
+                "ecs:ListTagsForResource"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "ECSServiceManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:UpdateService",
+                "ecs:DeleteService"
+            ],
+            "Resource": "arn:aws:ecs:*:*:service/*/*"
+        },
+        {
+            "Sid": "ECSTaskManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:StopTask",
+                "ecs:RunTask"
+            ],
+            "Resource": [
+                "arn:aws:ecs:*:*:task/*/*",
+                "arn:aws:ecs:*:*:task-definition/*:*"
+            ]
+        },
+        {
+            "Sid": "ECSContainerInstanceManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:UpdateContainerInstancesState"
+            ],
+            "Resource": "arn:aws:ecs:*:*:container-instance/*/*"
+        },
+        {
+            "Sid": "ApplicationAutoScaling",
+            "Effect": "Allow",
+            "Action": [
+                "application-autoscaling:DescribeScalableTargets",
+                "application-autoscaling:DescribeScalingPolicies"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CloudWatchLogs",
+            "Effect": "Allow",
+            "Action": [
+                "logs:DescribeLogGroups",
+                "logs:DescribeLogStreams"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "IAMPassRole",
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": "*",
+            "Condition": {
+                "StringLike": {
+                    "iam:PassedToService": "ecs-tasks.amazonaws.com"
+                }
+            }
+        },
+        {
+            "Sid": "STSGetCallerIdentity",
+            "Effect": "Allow",
+            "Action": "sts:GetCallerIdentity",
+            "Resource": "*"
+        }
+    ]
+}

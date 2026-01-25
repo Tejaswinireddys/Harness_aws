@@ -1,0 +1,145 @@
+###############################################################################
+# Pipeline: ECS Resource List (Simple)
+# Purpose: Quick listing of ECS clusters and services
+# Author: Platform Team
+# Version: 1.0.0
+###############################################################################
+
+pipeline:
+  name: ECS Resource List
+  identifier: ecs_resource_list
+  projectIdentifier: <+org.identifier>_platform
+  orgIdentifier: <+org.identifier>
+  description: Quick pipeline to list ECS clusters and services
+  tags:
+    category: container
+    team: platform
+
+  variables:
+    - name: aws_region
+      type: String
+      description: AWS Region
+      required: true
+      value: <+input>.default(us-east-1).allowedValues(us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-central-1,ap-south-1)
+
+    - name: cluster_name
+      type: String
+      description: Cluster name (leave empty for all clusters)
+      required: false
+      value: <+input>
+
+  stages:
+    - stage:
+        name: List ECS Resources
+        identifier: list_resources
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Fetch ECS Resources
+                  identifier: fetch_resources
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════╗"
+                          echo "║              ECS RESOURCE LIST - $AWS_REGION"
+                          echo "╚══════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # List clusters
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo "  ECS CLUSTERS"
+                          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                          echo ""
+
+                          CLUSTER_ARNS=$(aws ecs list-clusters --region "$AWS_REGION" --query 'clusterArns' --output json)
+                          CLUSTER_COUNT=$(echo "$CLUSTER_ARNS" | jq 'length')
+
+                          if [[ "$CLUSTER_COUNT" -gt 0 ]]; then
+                            CLUSTERS=$(aws ecs describe-clusters \
+                              --region "$AWS_REGION" \
+                              --clusters $(echo "$CLUSTER_ARNS" | jq -r '.[]') \
+                              --query 'clusters[].{Name: clusterName, Status: status, Running: runningTasksCount, Pending: pendingTasksCount, Services: activeServicesCount, Instances: registeredContainerInstancesCount}' \
+                              --output json)
+
+                            echo "┌────────────────────────────┬──────────┬──────────┬──────────┬──────────┬────────────┐"
+                            echo "│ Cluster Name               │ Status   │ Running  │ Pending  │ Services │ Instances  │"
+                            echo "├────────────────────────────┼──────────┼──────────┼──────────┼──────────┼────────────┤"
+
+                            echo "$CLUSTERS" | jq -r '.[] | [.Name, .Status, (.Running|tostring), (.Pending|tostring), (.Services|tostring), (.Instances|tostring)] | @tsv' | while IFS=$'\t' read -r name status running pending services instances; do
+                              printf "│ %-26s │ %-8s │ %8s │ %8s │ %8s │ %10s │\n" \
+                                "${name:0:26}" "$status" "$running" "$pending" "$services" "$instances"
+                            done
+
+                            echo "└────────────────────────────┴──────────┴──────────┴──────────┴──────────┴────────────┘"
+                          else
+                            echo "  No clusters found"
+                          fi
+                          echo ""
+
+                          # List services for specified cluster or all clusters
+                          if [[ -n "${CLUSTER_NAME:-}" ]]; then
+                            CLUSTER_LIST="$CLUSTER_NAME"
+                          else
+                            CLUSTER_LIST=$(echo "$CLUSTER_ARNS" | jq -r '.[]' | awk -F'/' '{print $NF}')
+                          fi
+
+                          for cluster in $CLUSTER_LIST; do
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo "  SERVICES IN: $cluster"
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo ""
+
+                            SERVICE_ARNS=$(aws ecs list-services --region "$AWS_REGION" --cluster "$cluster" --query 'serviceArns' --output json 2>/dev/null || echo "[]")
+                            SERVICE_COUNT=$(echo "$SERVICE_ARNS" | jq 'length')
+
+                            if [[ "$SERVICE_COUNT" -gt 0 ]]; then
+                              SERVICES=$(aws ecs describe-services \
+                                --region "$AWS_REGION" \
+                                --cluster "$cluster" \
+                                --services $(echo "$SERVICE_ARNS" | jq -r '.[]' | head -10) \
+                                --query 'services[].{Name: serviceName, Status: status, Desired: desiredCount, Running: runningCount, Pending: pendingCount, Launch: launchType}' \
+                                --output json)
+
+                              echo "┌──────────────────────────────┬──────────┬─────────┬─────────┬─────────┬──────────┐"
+                              echo "│ Service Name                 │ Status   │ Desired │ Running │ Pending │ Launch   │"
+                              echo "├──────────────────────────────┼──────────┼─────────┼─────────┼─────────┼──────────┤"
+
+                              echo "$SERVICES" | jq -r '.[] | [.Name, .Status, (.Desired|tostring), (.Running|tostring), (.Pending|tostring), (.Launch // "EC2")] | @tsv' | while IFS=$'\t' read -r name status desired running pending launch; do
+                                # Health indicator
+                                if [[ "$running" -eq "$desired" && "$desired" -gt 0 ]]; then
+                                  health="●"
+                                elif [[ "$desired" -eq 0 ]]; then
+                                  health="○"
+                                else
+                                  health="◐"
+                                fi
+                                printf "│ %-28s │ %-8s │ %7s │ %7s │ %7s │ %-8s │\n" \
+                                  "${name:0:28}" "$status" "$desired" "$running" "$pending" "${launch:0:8}"
+                              done
+
+                              echo "└──────────────────────────────┴──────────┴─────────┴─────────┴─────────┴──────────┘"
+                            else
+                              echo "  No services found"
+                            fi
+                            echo ""
+                          done
+
+                          echo "CLUSTER_COUNT=$CLUSTER_COUNT" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      CLUSTER_NAME: <+pipeline.variables.cluster_name>
+                    outputVariables:
+                      - name: CLUSTER_COUNT
+                  timeout: 5m

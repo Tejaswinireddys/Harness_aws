@@ -1,0 +1,125 @@
+###############################################################################
+# Pipeline: EC2 Instance List (Simple)
+# Purpose: Quick listing of EC2 instances across AWS regions
+# Author: Platform Team
+# Version: 1.0.0
+###############################################################################
+
+pipeline:
+  name: EC2 Instance List
+  identifier: ec2_instance_list
+  projectIdentifier: <+org.identifier>_platform
+  orgIdentifier: <+org.identifier>
+  description: Quick pipeline to list EC2 instances by state
+  tags:
+    category: infrastructure
+    team: platform
+
+  variables:
+    - name: aws_region
+      type: String
+      description: AWS Region
+      required: true
+      value: <+input>.default(us-east-1).allowedValues(us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-central-1,ap-south-1)
+
+    - name: state_filter
+      type: String
+      description: Filter by instance state
+      required: true
+      value: <+input>.default(all).allowedValues(all,running,stopped)
+
+    - name: environment_filter
+      type: String
+      description: Filter by Environment tag
+      required: false
+      value: <+input>.default("")
+
+  stages:
+    - stage:
+        name: List Instances
+        identifier: list_instances
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: ShellScript
+                  name: Fetch EC2 Instances
+                  identifier: fetch_instances
+                  spec:
+                    shell: Bash
+                    source:
+                      type: Inline
+                      spec:
+                        script: |
+                          #!/bin/bash
+                          set -euo pipefail
+
+                          echo ""
+                          echo "╔══════════════════════════════════════════════════════════════╗"
+                          echo "║              EC2 INSTANCE LIST - $AWS_REGION"
+                          echo "╚══════════════════════════════════════════════════════════════╝"
+                          echo ""
+
+                          # Build filter
+                          FILTER=""
+                          case "$STATE_FILTER" in
+                            "running") FILTER="Name=instance-state-name,Values=running" ;;
+                            "stopped") FILTER="Name=instance-state-name,Values=stopped" ;;
+                            *) FILTER="Name=instance-state-name,Values=running,stopped,pending,stopping" ;;
+                          esac
+
+                          if [[ -n "${ENV_FILTER:-}" ]]; then
+                            FILTER="$FILTER Name=tag:Environment,Values=$ENV_FILTER"
+                          fi
+
+                          # Fetch instances
+                          INSTANCES=$(aws ec2 describe-instances \
+                            --region "$AWS_REGION" \
+                            --filters $FILTER \
+                            --query 'Reservations[].Instances[].{
+                              ID: InstanceId,
+                              State: State.Name,
+                              Type: InstanceType,
+                              IP: PrivateIpAddress,
+                              Name: Tags[?Key==`Name`].Value | [0],
+                              Env: Tags[?Key==`Environment`].Value | [0]
+                            }' \
+                            --output json)
+
+                          TOTAL=$(echo "$INSTANCES" | jq 'length')
+                          RUNNING=$(echo "$INSTANCES" | jq '[.[] | select(.State == "running")] | length')
+                          STOPPED=$(echo "$INSTANCES" | jq '[.[] | select(.State == "stopped")] | length')
+
+                          echo "Summary: $TOTAL total | $RUNNING running | $STOPPED stopped"
+                          echo ""
+
+                          if [[ "$TOTAL" -gt 0 ]]; then
+                            echo "┌────────────────────┬─────────────┬───────────────┬──────────────────┬────────────────────┐"
+                            echo "│ Instance ID        │ State       │ Type          │ Private IP       │ Name               │"
+                            echo "├────────────────────┼─────────────┼───────────────┼──────────────────┼────────────────────┤"
+
+                            echo "$INSTANCES" | jq -r '.[] | [.ID, .State, .Type, .IP // "N/A", .Name // "Unnamed"] | @tsv' | while IFS=$'\t' read -r id state type ip name; do
+                              printf "│ %-18s │ %-11s │ %-13s │ %-16s │ %-18s │\n" "$id" "$state" "$type" "${ip:-N/A}" "${name:0:18}"
+                            done
+
+                            echo "└────────────────────┴─────────────┴───────────────┴──────────────────┴────────────────────┘"
+                          else
+                            echo "No instances found matching criteria."
+                          fi
+
+                          echo ""
+                          echo "TOTAL=$TOTAL" >> $HARNESS_OUTPUT_FILE
+                          echo "RUNNING=$RUNNING" >> $HARNESS_OUTPUT_FILE
+                          echo "STOPPED=$STOPPED" >> $HARNESS_OUTPUT_FILE
+                    envVariables:
+                      AWS_ACCESS_KEY_ID: <+secrets.getValue("org.aws_access_key_id")>
+                      AWS_SECRET_ACCESS_KEY: <+secrets.getValue("org.aws_secret_access_key")>
+                      AWS_REGION: <+pipeline.variables.aws_region>
+                      STATE_FILTER: <+pipeline.variables.state_filter>
+                      ENV_FILTER: <+pipeline.variables.environment_filter>
+                    outputVariables:
+                      - name: TOTAL
+                      - name: RUNNING
+                      - name: STOPPED
+                  timeout: 5m
